@@ -104,7 +104,7 @@ component: sidebar
 
 ## 5. 统一事件协议
 
-无论底层使用 Kimi SSE、ReadableStream 还是本地事件总线，前端只消费统一事件：
+无论底层使用供应商 SSE、ReadableStream 还是本地事件总线，前端只消费统一事件：
 
 ```ts
 type GenerationEvent =

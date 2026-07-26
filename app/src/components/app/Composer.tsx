@@ -80,7 +80,7 @@ export default function Composer() {
         </div>
       </div>
       <div className="mt-1.5 text-center text-[9px] text-neutral-500/80">
-        {harnessMode === 'kimi' ? 'Browser Harness · Kimi BYOK · iframe 沙箱运行' : '未配置 Key · 当前使用本地 Mock Harness 演示'}
+        {harnessMode === 'kimi' ? 'Browser Harness · BYOK · OpenAI-compatible API · iframe 沙箱运行' : '未配置 Key · 当前使用本地 Mock Harness 演示'}
       </div>
     </div>
   )

@@ -2,12 +2,12 @@
 
 ## 定位
 
-“今天选什么？”默认是一个可静态部署的开源前端工具：不要求账号、云数据库或项目维护者提供后端。用户提供自己的 Kimi API Key，浏览器直接调用 OpenAI-compatible API。
+“今天选什么？”默认是一个可静态部署的开源前端工具：不要求账号、云数据库或项目维护者提供后端。用户提供自己的 API Key，浏览器直接调用 OpenAI-compatible API。
 
 ```text
 React UI
 → Browser Generation Harness
-→ Kimi API（BYOK）
+→ OpenAI-compatible API（BYOK）
 → 浏览器 Runtime 沙箱
 → IndexedDB
 ```
@@ -19,7 +19,7 @@ React UI
 代码位于 `app/src/lib/harness/`：
 
 - `session.ts`：Planner → 视觉方向 → 并发候选 → 编译/Fixer → 选择 → Reviewer 的主状态机。
-- `kimi.ts`：浏览器端 Kimi SSE 客户端和 JSON 聚合。
+- `kimi.ts`：浏览器端兼容 SSE 客户端和 JSON 聚合（保留旧文件名以避免破坏现有导入）。
 - `scheduler.ts`：限制并发、取消、重试和失败降级。
 - `events.ts`：统一事件、顺序号、重放和稳定的随机 `motionCue`。
 - `schemas.ts`：Structured Output 校验、依赖白名单和文件路径安全检查。
@@ -63,7 +63,7 @@ await session.chooseDirection(plan.visualDirections[0].id)
 
 ## 安全边界
 
-- Kimi Key 不写入项目文件，也不随导出 JSON 导出。
+- API Key 不写入项目文件，也不随导出 JSON 导出。
 - AI 文件拒绝绝对路径、`..`、反斜杠和非白名单扩展名。
 - 组件依赖只允许 `react`、`react-dom`、`lucide-react`、`motion`。
 - AI 代码不得进入编辑器主 React 树，必须在隔离 Runtime 中运行。

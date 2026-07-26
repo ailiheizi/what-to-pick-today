@@ -112,7 +112,7 @@ export default function StarModal() {
             喜欢这个项目的话，欢迎 Star ✨
           </div>
           <p className="mt-1 text-[11px] leading-relaxed text-neutral-300">
-            今天选什么？是开源项目（BYOK，自带 Kimi API Key 即可跑）。你的 Star 是对 AI 负责生成、人负责挑选这个理念最大的鼓励。
+            今天选什么？是开源项目（BYOK，接入任意兼容 API 即可运行）。你的 Star 是对 AI 负责生成、人负责挑选这个理念最大的鼓励。
           </p>
           <a
             href={REPO_URL}

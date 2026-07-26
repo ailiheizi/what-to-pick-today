@@ -59,7 +59,7 @@ export default function TopBar() {
       <div className="ml-auto flex items-center gap-2">
         <button
           onClick={openSettings}
-          title="配置 Kimi API Key"
+          title="配置 AI API"
           className={`hover-pop relative w-9 h-9 rounded-full bg-white/70 backdrop-blur border border-white/60 shadow-sm flex items-center justify-center ${harnessMode === 'kimi' ? 'text-emerald-600' : 'text-neutral-500'}`}
         >
           <KeyRound size={15} />

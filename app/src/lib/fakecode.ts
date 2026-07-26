@@ -1,4 +1,4 @@
-// 为"代码流式生成"演出构造的伪源码 —— 真实 Harness 中这里会是 Kimi 的真实 token 流。
+// 为"代码流式生成"演出构造的伪源码 —— 真实 Harness 中这里会是模型 API 的真实 token 流。
 import type { CandidateDef, SlotDef } from '../candidates/types'
 
 export function fakeSource(slot: SlotDef, cand: CandidateDef): string {

@@ -70,16 +70,16 @@ function parseJson(text: string): unknown {
     const start = trimmed.indexOf('{')
     const end = trimmed.lastIndexOf('}')
     if (start >= 0 && end > start) return JSON.parse(trimmed.slice(start, end + 1))
-    throw new Error('Kimi 没有返回可解析的 JSON')
+    throw new Error('模型 API 没有返回可解析的 JSON')
   }
 }
 
 function responseError(status: number, body: string) {
   try {
     const parsed = JSON.parse(body) as { error?: { message?: string } }
-    return new Error(`Kimi API ${status}: ${parsed.error?.message ?? body}`)
+    return new Error(`模型 API ${status}: ${parsed.error?.message ?? body}`)
   } catch {
-    return new Error(`Kimi API ${status}: ${body}`)
+    return new Error(`模型 API ${status}: ${body}`)
   }
 }
 
@@ -95,7 +95,7 @@ export class BrowserKimiClient {
   }
 
   async completeJson(messages: ChatMessage[], options: CompletionOptions): Promise<unknown> {
-    if (!this.#settings.apiKey.trim()) throw new Error('请先配置 Kimi API Key')
+    if (!this.#settings.apiKey.trim()) throw new Error('请先配置 AI API Key')
     const model = options.model ?? this.#settings.model
     const response = await this.#fetch(`${this.#settings.baseUrl.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',
@@ -114,7 +114,7 @@ export class BrowserKimiClient {
     })
 
     if (!response.ok) throw responseError(response.status, await response.text())
-    if (!response.body) throw new Error('Kimi 返回了空响应')
+    if (!response.body) throw new Error('模型 API 返回了空响应')
 
     const reader = response.body.getReader()
     const decoder = new TextDecoder()

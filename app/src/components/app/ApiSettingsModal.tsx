@@ -46,8 +46,8 @@ export default function ApiSettingsModal() {
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-2xl bg-neutral-900 text-amber-300 flex items-center justify-center shadow-lg"><KeyRound size={17} /></div>
           <div>
-            <h2 className="text-base font-black text-neutral-900">Kimi · BYOK 设置</h2>
-            <p className="text-[10px] text-neutral-400">配置后下一次生成会自动切换到真实 Harness</p>
+            <h2 className="text-base font-black text-neutral-900">AI API · BYOK 设置</h2>
+            <p className="text-[10px] text-neutral-400">支持 OpenAI-compatible API；保存后下一次生成切换到真实 Harness</p>
           </div>
         </div>
 
@@ -62,15 +62,15 @@ export default function ApiSettingsModal() {
         <div className="mt-3 grid grid-cols-[1fr_120px_120px] gap-2">
           <div>
             <label className="block text-[10px] font-bold text-neutral-500">Base URL</label>
-            <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} className="mt-1.5 w-full rounded-2xl border border-neutral-200 bg-neutral-50 px-3 py-2.5 text-[10px] font-mono focus:outline-none" />
+            <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.example.com/v1" className="mt-1.5 w-full rounded-2xl border border-neutral-200 bg-neutral-50 px-3 py-2.5 text-[10px] font-mono focus:outline-none" />
           </div>
           <div>
             <label className="block text-[10px] font-bold text-neutral-500">规划模型</label>
-            <input value={model} onChange={(event) => setModel(event.target.value)} className="mt-1.5 w-full rounded-2xl border border-neutral-200 bg-neutral-50 px-3 py-2.5 text-[10px] font-mono focus:outline-none" />
+            <input value={model} onChange={(event) => setModel(event.target.value)} placeholder="规划 / 快速模型" className="mt-1.5 w-full rounded-2xl border border-neutral-200 bg-neutral-50 px-3 py-2.5 text-[10px] font-mono focus:outline-none" />
           </div>
           <div>
             <label className="block text-[10px] font-bold text-neutral-500">组件模型</label>
-            <input value={codeModel} onChange={(event) => setCodeModel(event.target.value)} className="mt-1.5 w-full rounded-2xl border border-neutral-200 bg-neutral-50 px-3 py-2.5 text-[10px] font-mono focus:outline-none" />
+            <input value={codeModel} onChange={(event) => setCodeModel(event.target.value)} placeholder="组件 / 代码模型" className="mt-1.5 w-full rounded-2xl border border-neutral-200 bg-neutral-50 px-3 py-2.5 text-[10px] font-mono focus:outline-none" />
           </div>
         </div>
 

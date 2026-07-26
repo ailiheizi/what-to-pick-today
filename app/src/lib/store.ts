@@ -1,6 +1,6 @@
 // Mock Harness —— 前端内模拟文档中的 AI Generation Harness：
 // Planner → 并发 Component Builders（每个候选一条任务）→ 统一事件 → 渐进渲染 → 用户挑选 → Reviewer 打补丁。
-// 接入真实 Kimi API 时，只需把 scheduler 的任务体替换为真实 SSE 流，状态机与 UI 保持不变。
+// 接入真实 OpenAI-compatible API 时，只需把 scheduler 的任务体替换为真实 SSE 流，状态机与 UI 保持不变。
 import { create } from 'zustand'
 import type { CandidateDef, Scenario, SlotDef } from '../candidates/types'
 import { matchScenario } from './scenarios'
@@ -581,7 +581,7 @@ export const useStore = create<Store>((set, get) => {
         })
         pushChat('user', text)
         pushChat('ai', '收到。真实 Planner 正在分析需求、拆分组件合同和页面槽位…')
-        pushHistory('plan', 'Kimi Planner 收到需求')
+        pushHistory('plan', 'AI Planner 收到需求')
         const runtime = new SandboxRuntimeAdapter({ getCssVariables: () => getDirection(get().directionId ?? 'apple').vars })
         const session = new HarnessSession(text, { kimi: loadKimiSettings(), concurrency: 4, candidateCount: 1, runtime })
         activeHarness = session
@@ -592,7 +592,7 @@ export const useStore = create<Store>((set, get) => {
           if (activeHarness !== session) return
           const message = reason instanceof Error ? reason.message : String(reason)
           set({ phase: 'idle', harnessError: message })
-          pushChat('sys', `Kimi Planner 失败：${message}`)
+          pushChat('sys', `AI Planner 失败：${message}`)
         })
         return
       }
@@ -644,7 +644,7 @@ export const useStore = create<Store>((set, get) => {
         const session = activeHarness
         set({ directionId: id, phase: 'generating', stopped: false })
         pushHistory('direction', `选定视觉底板 · 分支「${dir.name}」`)
-        pushChat('ai', `底板「${dir.name}」已锁定。K3 正在为每个槽位优先生成 1 个首屏候选；需要时可继续补充更多版本。`)
+        pushChat('ai', `底板「${dir.name}」已锁定。组件模型正在为每个槽位优先生成 1 个首屏候选；需要时可继续补充更多版本。`)
         sfx.playStart()
         void session.chooseVisualDirection(harnessDirection(id)).catch((reason: unknown) => {
           if (activeHarness !== session) return
@@ -809,7 +809,7 @@ export const useStore = create<Store>((set, get) => {
         })
         return
       }
-      pushChat('ai', '已记录为 Fixer 任务。本地演示模式下我会尽量用补丁响应；接入 Kimi API 后，这句话会变成真实的修复请求。')
+      pushChat('ai', '已记录为 Fixer 任务。本地演示模式下我会尽量用补丁响应；接入兼容 API 后，这句话会变成真实的修复请求。')
       pushHistory('sys', `补充要求：「${text.slice(0, 24)}${text.length > 24 ? '…' : ''}」`)
     },
 

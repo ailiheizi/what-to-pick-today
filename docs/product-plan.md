@@ -50,7 +50,7 @@ planned
 → ready
 ```
 
-后台或本地 Harness 并发运行多个 Kimi 请求，任何组件先完成，就先显示在画布和候选区中，不等待整页生成结束。
+后台或本地 Harness 并发运行多个模型 API 请求，任何组件先完成，就先显示在画布和候选区中，不等待整页生成结束。
 
 流式代码不应每收到几个字符就编译。建议在完整代码块、文件完成标记或 300～800ms 防抖后尝试编译；编译失败时保留上一次成功画面，并把错误交给修复任务。
 
@@ -64,7 +64,7 @@ planned
 
 视觉方向可以先由 Planner 一并生成。后续再独立成 Visual Director。
 
-所有角色可以使用 Kimi，不需要为了多模型而增加复杂度。角色差异来自 System Prompt、输入上下文、输出 Schema 和可调用工具。
+所有角色可以使用同一个 OpenAI-compatible API，也可以分别选择规划模型和组件模型。角色差异来自 System Prompt、输入上下文、输出 Schema 和可调用工具。
 
 ## 6. AI 自由发展的视觉规则
 
@@ -143,14 +143,14 @@ type ComponentContract = {
 
 ## 8. 开源与运行模式
 
-项目采用 BYOK，由使用者在界面中提供自己的 Kimi API Key，项目维护者不承担模型费用。
+项目采用 BYOK，由使用者在界面中提供自己的兼容 API Key，项目维护者不承担模型费用。
 
 默认采用纯前端静态运行：
 
 ```text
 浏览器
 → Browser Generation Harness
-→ Kimi API
+→ OpenAI-compatible API
 ```
 
 API Key 默认只保存在 `sessionStorage`，用户明确选择记住时才保存在 `localStorage`；Key 不进入项目导出。项目不要求登录、云数据库、付费系统或托管 Serverless。若供应商 CORS 不可用，用户可以自行配置兼容 Proxy URL。
@@ -168,7 +168,7 @@ API Key 默认只保存在 `sessionStorage`，用户明确选择记住时才保�
 - SSE
 - Sandpack、WebContainers 或 iframe 沙箱
 - 浏览器内 TypeScript / JSX 编译
-- Kimi API
+- OpenAI-compatible API
 
 AI 生成代码必须运行在隔离环境中。禁止直接在编辑器主页面执行任意生成代码。
 
@@ -204,14 +204,14 @@ AI 生成代码必须运行在隔离环境中。禁止直接在编辑器主页�
 
 ```text
 输入产品需求
-→ Kimi 拆成 3～6 个组件
+→ Planner 拆成 1～4 个组件槽位
 → 生成 3 个视觉方向
 → 用户选择底板
 → 组件并发生成
 → 完成一个渲染一个
 → 用户为每个组件选择候选
 → 页面实时拼完整
-→ Kimi 根据截图检查和修复
+→ Reviewer 根据截图检查并提出修复建议
 ```
 
 第一版暂不做：

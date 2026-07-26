@@ -10,6 +10,7 @@ const trackedFiles = execFileSync('git', ['ls-files', '-z'], {
 }).split('\0').filter(Boolean)
 
 const credentialPatterns = [
+  { name: 'client-exposed secret variable', regex: /\bVITE_[A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD)\b/g },
   { name: 'provider API key', regex: /\bsk-[A-Za-z0-9_-]{20,}\b/g },
   { name: 'Resend API key', regex: /\bre_[A-Za-z0-9_-]{20,}\b/g },
   { name: 'GitHub token', regex: /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g },

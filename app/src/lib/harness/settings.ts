@@ -5,10 +5,10 @@ const SESSION_KEY = 'what-to-pick-today:kimi-key:session'
 const PERSISTENT_KEY = 'what-to-pick-today:kimi-key:persistent'
 
 const DEFAULTS: Omit<KimiSettings, 'apiKey'> = {
-  baseUrl: 'https://api.moonshot.cn/v1',
-  model: 'kimi-k2.5',
-  codeModel: 'kimi-k3',
-  temperature: 1,
+  baseUrl: '',
+  model: '',
+  codeModel: '',
+  temperature: 0.7,
 }
 
 export type SaveSettingsOptions = {
@@ -25,7 +25,7 @@ export function loadKimiSettings(): KimiSettings {
   const settings = {
     ...DEFAULTS,
     ...config,
-    apiKey: sessionStorage.getItem(SESSION_KEY) ?? localStorage.getItem(PERSISTENT_KEY) ?? import.meta.env.VITE_MOONSHOT_API_KEY ?? '',
+    apiKey: sessionStorage.getItem(SESSION_KEY) ?? localStorage.getItem(PERSISTENT_KEY) ?? '',
   }
   if (['kimi-k2.5', 'kimi-k3'].includes(settings.model)) settings.temperature = 1
   return settings

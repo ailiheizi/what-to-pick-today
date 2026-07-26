@@ -20,7 +20,7 @@ npm run dev
 - 构建：`npm run build --prefix app`
 - 输出：`app/dist`
 
-应用不要求服务端环境变量。Kimi API Key 由使用者在应用设置中填写，并保存在其浏览器中。请勿将私人 Key 提交到仓库，或以 `VITE_` 环境变量注入公开部署，因为 Vite 会把它打包进浏览器代码。
+应用不要求服务端环境变量。OpenAI-compatible API Key 由使用者在应用设置中填写，并保存在其浏览器中。请勿将私人 Key 提交到仓库，或以 `VITE_` 环境变量注入公开部署，因为 Vite 会把它打包进浏览器代码。
 
 ### 本地测试凭据
 
