@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import type { CandidateArtifact, CandidateVariant, PagePlan, ReviewResult } from './types.ts'
+import type { BuilderAgentPersona, CandidateArtifact, CandidateVariant, PagePlan, ReviewResult } from './types.ts'
 
 const slug = z.string().min(1).max(80).regex(/^[a-zA-Z0-9_-]+$/)
 const visualDNA = z.object({
@@ -65,6 +65,7 @@ export function parseCandidate(value: unknown, input: {
   id: string
   componentId: string
   variant: CandidateVariant
+  agent?: BuilderAgentPersona
 }): CandidateArtifact {
   const candidate = candidateSchema.parse(value)
   candidate.files.forEach((file) => assertSafePath(file.path))

@@ -1,11 +1,46 @@
-import { useCallback, useEffect, useRef } from 'react'
-import { Check, Layers, Loader2 } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Bot, Check, CircleAlert, Layers, Loader2, MousePointer2, Sparkles } from 'lucide-react'
 import { useStore, type CandidateState } from '../../lib/store'
 import { playClick, playTick } from '../../lib/sound'
 import { PlayfulLoader } from './playful'
 import GeneratedCandidatePreview from './GeneratedCandidatePreview'
 import StreamingHtmlPreview from './StreamingHtmlPreview'
 import { getDirection } from '../../lib/dna'
+
+const FALLBACK_AGENTS = {
+  expressive: { id: 'motion', name: 'Motion Agent', role: '动效与情绪反馈' },
+  conservative: { id: 'product', name: 'Product Agent', role: '产品结构与可用性' },
+  experimental: { id: 'explorer', name: 'Explorer Agent', role: '探索式构图与交互' },
+} as const
+
+const GENERATION_STEPS = ['排队', '草图', '写组件', '编译', '完成'] as const
+
+function candidateActivity(cand: CandidateState) {
+  const hasSource = cand.code.length > 0 || Boolean(cand.artifact)
+  const step = cand.status === 'queued'
+    ? 0
+    : cand.status === 'streaming'
+      ? hasSource ? 2 : 1
+      : cand.status === 'compiling'
+        ? 3
+        : cand.status === 'rendered'
+          ? 4
+          : hasSource ? 3 : 1
+
+  const label = cand.status === 'failed'
+    ? '生成失败'
+    : cand.status === 'streaming' && hasSource
+      ? '正在写组件'
+      : cand.status === 'streaming'
+        ? '正在画草图'
+        : cand.status === 'compiling'
+          ? cand.error ? '正在自动修复' : '正在编译'
+          : cand.status === 'rendered'
+            ? '候选已完成'
+            : '等待启动'
+
+  return { step, label }
+}
 
 function CandidateCard({
   cand,
@@ -27,20 +62,81 @@ function CandidateCard({
   cssVariables: Record<string, string>
 }) {
   const ready = cand.status === 'rendered'
+  const agent = cand.artifact?.agent ?? FALLBACK_AGENTS[cand.def.style]
+  const activity = candidateActivity(cand)
+  const [isLocking, setIsLocking] = useState(false)
+  const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => () => {
+    if (confirmTimer.current) clearTimeout(confirmTimer.current)
+  }, [])
+
+  const handleConfirm = () => {
+    if (!ready || isSelected || isLocking) return
+    setIsLocking(true)
+    playClick()
+    confirmTimer.current = setTimeout(() => {
+      onConfirm()
+      setIsLocking(false)
+    }, 360)
+  }
+
   return (
     <div
       data-cand-card
+      data-state={isSelected ? 'selected' : isTryOn ? 'trying' : 'idle'}
       onClick={() => ready && onTryOn()}
-      className={`snap-center shrink-0 rounded-2xl border bg-white overflow-hidden transition-all duration-300 ${
+      className={`candidate-choice-card group relative snap-center shrink-0 rounded-2xl border bg-white overflow-hidden ${
         ready ? 'cursor-pointer' : ''
       } ${
-        isSelected
-          ? 'border-emerald-400 ring-4 ring-emerald-400/25 scale-[1.01]'
+        isLocking
+          ? 'candidate-choice-locking border-emerald-400'
+          : isSelected
+          ? 'candidate-choice-selected border-emerald-400'
           : isTryOn
-            ? 'border-neutral-900 shadow-xl scale-[1.01]'
-            : 'border-neutral-200/80 opacity-80 hover:opacity-100'
+            ? 'candidate-choice-trying border-neutral-900'
+            : 'candidate-choice-idle border-neutral-200/80'
       }`}
     >
+      <div className="candidate-choice-glow pointer-events-none absolute inset-0 z-20 rounded-[inherit]" />
+      <div className="candidate-agent-panel relative z-[1] px-3 pt-2.5 pb-2" data-agent={agent.id}>
+        <div className="flex items-center gap-2">
+          <span className="candidate-agent-avatar flex size-7 shrink-0 items-center justify-center rounded-xl">
+            <Bot size={14} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5">
+              <span className="truncate text-[10px] font-extrabold text-neutral-800">{agent.name}</span>
+              <span className={`candidate-agent-live-dot ${cand.status === 'rendered' || cand.status === 'failed' ? 'is-settled' : ''}`} />
+            </div>
+            <div className="truncate text-[8px] font-medium text-neutral-500">{agent.role}</div>
+          </div>
+          <div className={`candidate-agent-status flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-[8px] font-bold ${cand.status === 'failed' ? 'is-failed' : ''}`}>
+            {cand.status === 'failed'
+              ? <CircleAlert size={9} />
+              : cand.status !== 'rendered' && <Loader2 size={9} className="animate-spin" />}
+            {activity.label}
+          </div>
+        </div>
+        <div className="mt-2 flex items-center gap-1" aria-label={`生成进度：${activity.label}，第 ${activity.step + 1} 步，共 ${GENERATION_STEPS.length} 步`}>
+          {GENERATION_STEPS.map((stepLabel, index) => (
+            <div key={stepLabel} className="min-w-0 flex-1">
+              <div
+                className={`candidate-agent-step h-1 rounded-full ${
+                  index < activity.step || cand.status === 'rendered'
+                    ? 'is-done'
+                    : index === activity.step
+                      ? cand.status === 'failed' ? 'is-failed' : 'is-active'
+                      : ''
+                }`}
+              />
+              <div className={`mt-1 truncate text-center text-[6px] font-bold ${index === activity.step ? 'text-neutral-600' : 'text-neutral-300'}`}>
+                {stepLabel}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
       {/* 实时预览（缩放） */}
       <div className="relative bg-neutral-50 border-b border-neutral-100 overflow-hidden" style={{ height: previewH * 0.52 }}>
         {ready ? (
@@ -73,12 +169,21 @@ function CandidateCard({
           </div>
         )}
         {isTryOn && ready && !isSelected && (
-          <span className="anim-pop absolute top-1.5 right-1.5 px-2 py-0.5 rounded-full bg-neutral-900 text-white text-[8px] font-bold">试穿中</span>
+          <span className="anim-pop absolute top-1.5 right-1.5 px-2 py-1 rounded-full bg-neutral-900 text-white text-[8px] font-bold shadow-lg flex items-center gap-1">
+            <MousePointer2 size={8} /> 试穿中
+          </span>
         )}
         {isSelected && (
-          <span className="anim-pop absolute top-1.5 right-1.5 px-2 py-0.5 rounded-full bg-emerald-500 text-white text-[8px] font-bold flex items-center gap-0.5">
+          <span className="anim-pop absolute top-1.5 right-1.5 px-2 py-1 rounded-full bg-emerald-500 text-white text-[8px] font-bold shadow-lg flex items-center gap-0.5">
             <Check size={8} /> 已拼入
           </span>
+        )}
+        {isLocking && (
+          <div className="candidate-choice-confirm-flash absolute inset-0 z-10 flex items-center justify-center bg-emerald-500/16 backdrop-blur-[1px]">
+            <span className="candidate-choice-confirm-pill flex items-center gap-1.5 rounded-full bg-neutral-950 px-3 py-1.5 text-[9px] font-bold text-white shadow-xl">
+              <Sparkles size={10} className="text-amber-300" /> 正在扣合
+            </span>
+          </div>
         )}
       </div>
       {/* 信息 + 操作 */}
@@ -88,13 +193,15 @@ function CandidateCard({
           <div className="text-[9px] text-neutral-400 truncate">{cand.def.blurb}</div>
         </div>
         <button
-          disabled={!ready || isSelected}
+          disabled={!ready || isSelected || isLocking}
           onClick={(e) => {
             e.stopPropagation()
-            onConfirm()
+            handleConfirm()
           }}
-          className={`hover-pop shrink-0 px-3 py-1.5 rounded-full text-[10px] font-bold transition-colors ${
-            isSelected
+          className={`candidate-choice-button hover-pop shrink-0 min-w-[66px] px-3 py-1.5 rounded-full text-[10px] font-bold ${
+            isLocking
+              ? 'bg-emerald-500 text-white shadow-lg'
+              : isSelected
               ? 'bg-emerald-50 text-emerald-600'
               : ready
                 ? slotSelected
@@ -103,9 +210,12 @@ function CandidateCard({
                 : 'bg-neutral-100 text-neutral-300 cursor-not-allowed'
           }`}
         >
-          {isSelected ? '✓ 当前' : slotSelected ? '替换 →' : '扣合 →'}
+          {isLocking ? '咔哒…' : isSelected ? '✓ 当前' : slotSelected ? '替换 →' : '扣合 →'}
         </button>
       </div>
+      {(isTryOn || isSelected) && ready && (
+        <div className={`candidate-choice-statebar ${isSelected ? 'bg-emerald-400' : 'bg-neutral-900'}`} />
+      )}
     </div>
   )
 }
@@ -180,11 +290,11 @@ export default function CandidateRail() {
                 setActiveSlot(s.def.id)
                 playClick()
               }}
-              className={`hover-pop px-2.5 py-1 rounded-full text-[10px] font-bold transition-colors ${
+              className={`candidate-slot-chip hover-pop relative px-2.5 py-1 rounded-full text-[10px] font-bold transition-colors ${
                 s.status === 'selected'
-                  ? 'bg-emerald-100 text-emerald-700'
+                  ? 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-300/70'
                   : activeSlot?.def.id === s.def.id
-                    ? 'bg-neutral-900 text-white shadow'
+                    ? 'bg-neutral-900 text-white shadow-md ring-2 ring-neutral-900/15'
                     : 'bg-white/80 border border-neutral-200/70 text-neutral-500 hover:border-neutral-400'
               }`}
             >
@@ -197,10 +307,10 @@ export default function CandidateRail() {
 
       {/* 候选滚动区 + 中心选择线 */}
       <div className="relative flex-1 min-h-0">
-        <div className="pointer-events-none absolute left-3 right-3 top-1/2 -translate-y-1/2 z-10 flex items-center gap-1">
-          <div className="h-px flex-1 bg-neutral-900/20 rounded-full" />
-          <span className="text-[8px] font-bold text-neutral-400 bg-white/80 rounded-full px-1.5 py-0.5 shadow-sm">选择线</span>
-          <div className="h-px flex-1 bg-neutral-900/20 rounded-full" />
+        <div className="candidate-selection-guide pointer-events-none absolute left-2 right-2 top-1/2 -translate-y-1/2 z-10 flex items-center gap-1 rounded-2xl px-1 py-2.5">
+          <div className="h-px flex-1 bg-neutral-900/30 rounded-full" />
+          <span className="text-[8px] font-bold text-neutral-600 bg-white rounded-full px-2 py-1 shadow-md ring-1 ring-neutral-900/10">试穿位置</span>
+          <div className="h-px flex-1 bg-neutral-900/30 rounded-full" />
         </div>
         <div ref={scrollRef} onScroll={handleScroll} className="h-full overflow-y-auto snap-y snap-mandatory px-3 py-[38%] space-y-3">
           {activeSlot?.candidates.map((c) => (

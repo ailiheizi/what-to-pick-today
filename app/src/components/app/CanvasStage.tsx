@@ -160,7 +160,7 @@ function DirectionPicker() {
 /* ---------------- 槽位外壳：随机加载 / 试穿 / 已确认 ---------------- */
 
 function SlotShell({ slot }: { slot: SlotState }) {
-  const { setActiveSlot, activeSlotId, bursts } = useStore()
+  const { setActiveSlot, tryOn, activeSlotId, bursts } = useStore()
   // 试穿优先：即使已扣合，试穿其他候选也即时预览（不替换已确认内容）
   const activeCand = slot.candidates.find((c) => c.def.id === (slot.tryOnId ?? slot.selectedId))
   const streaming = slot.candidates.find((c) => c.status === 'streaming' || c.status === 'compiling')
@@ -209,7 +209,15 @@ function SlotShell({ slot }: { slot: SlotState }) {
       {activeCand && activeCand.status === 'rendered' ? (
         <div key={activeCand.def.id + String(selected && !tryingOther)} className={`relative h-full flex-1 ${selected && !tryingOther ? 'anim-snap' : activeCand.anim}`}>
           {activeCand.artifact ? (
-            <GeneratedCandidatePreview candidate={activeCand.artifact} cssVariables={getDirection(useStore.getState().directionId ?? 'apple').vars} />
+            <GeneratedCandidatePreview
+              candidate={activeCand.artifact}
+              cssVariables={getDirection(useStore.getState().directionId ?? 'apple').vars}
+              selection={{ slotId: slot.def.id, candidateId: activeCand.def.id }}
+              onSelect={({ slotId, candidateId }) => {
+                setActiveSlot(slotId)
+                tryOn(slotId, candidateId)
+              }}
+            />
           ) : (
             <activeCand.def.Component />
           )}

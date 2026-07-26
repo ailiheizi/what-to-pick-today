@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createSandboxDocument } from '../src/lib/harness/sandbox-runtime.ts'
+import { createSandboxDocument, isSandboxSelectionMessage } from '../src/lib/harness/sandbox-runtime.ts'
 
 function candidate(content) {
   return {
@@ -40,4 +40,42 @@ test('sandbox escapes user-controlled script endings', async () => {
 
   assert.doesNotMatch(document, /<\/script><script>unsafe\(\)<\/script>/)
   assert.ok(document.includes(String.raw`\u003c/script>`))
+})
+
+test('sandbox selection bridge reports pointerdown without blocking component interaction', async () => {
+  const document = await createSandboxDocument(candidate(`
+    export default function Card() { return <button>Increment</button> }
+  `), {}, 'selection-token', {
+    slotId: 'counter',
+    candidateId: 'counter-motion',
+    revisionId: 'revision-2',
+  })
+
+  assert.match(document, /addEventListener\('pointerdown'/)
+  assert.match(document, /type:'selection'/)
+  assert.match(document, /slotId:"counter"/)
+  assert.match(document, /candidateId:"counter-motion"/)
+  assert.match(document, /revisionId:"revision-2"/)
+  assert.doesNotMatch(document, /preventDefault|stopPropagation|stopImmediatePropagation/)
+})
+
+test('sandbox selection messages require the current iframe, token and revision', () => {
+  const currentFrame = {}
+  const oldFrame = {}
+  const message = {
+    source: currentFrame,
+    data: {
+      source: 'wtpt-sandbox',
+      type: 'selection',
+      token: 'current-token',
+      revisionId: 'current-revision',
+      slotId: 'counter',
+      candidateId: 'counter-motion',
+    },
+  }
+
+  assert.equal(isSandboxSelectionMessage(message, currentFrame, 'current-token', 'current-revision'), true)
+  assert.equal(isSandboxSelectionMessage(message, oldFrame, 'current-token', 'current-revision'), false)
+  assert.equal(isSandboxSelectionMessage(message, currentFrame, 'old-token', 'current-revision'), false)
+  assert.equal(isSandboxSelectionMessage(message, currentFrame, 'current-token', 'old-revision'), false)
 })

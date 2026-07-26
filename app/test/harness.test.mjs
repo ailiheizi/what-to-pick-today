@@ -1,14 +1,17 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { HarnessEventStream } from '../src/lib/harness/events.ts'
+import { runComponentAgentGraph } from '../src/lib/harness/generation-graph.ts'
 import { BrowserKimiClient, extractStreamingJsonString, parseJson } from '../src/lib/harness/kimi.ts'
 import { isAllowedLocalProxyOrigin, isLocalModelProxyBase, rewriteModelProxyPath, splitModelApiBase } from '../src/lib/harness/local-proxy.ts'
 import { createAtomicPlan, normalizePlanCohesion } from '../src/lib/harness/plan-cohesion.ts'
+import { builderMessages } from '../src/lib/harness/prompts.ts'
 import { parseCandidate, parsePlan } from '../src/lib/harness/schemas.ts'
 import { TaskScheduler } from '../src/lib/harness/scheduler.ts'
 import { HarnessSession } from '../src/lib/harness/session.ts'
 import { createSandboxDocument } from '../src/lib/harness/sandbox-runtime.ts'
 import { isModelApiConfigured } from '../src/lib/harness/settings.ts'
+import { useStore } from '../src/lib/store.ts'
 import { migrateLocalEnvContent } from '../../scripts/migrate-local-env.mjs'
 
 test('scheduler enforces concurrency and retries failed work', async () => {
@@ -44,6 +47,43 @@ test('scheduler enforces concurrency and retries failed work', async () => {
   assert.equal(attempts, 1)
   assert.deepEqual(retries, ['task-0:1'])
   assert.deepEqual([...results].sort(), [0, 1, 2, 3])
+})
+
+test('LangGraph fans specialist component agents out and reduces their results', async () => {
+  const controller = new AbortController()
+  const started = []
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  const run = runComponentAgentGraph([
+    { id: 'product-job', variant: 'conservative', run: async () => { started.push('product'); await gate; return 'product-result' } },
+    { id: 'explorer-job', variant: 'experimental', run: async () => { started.push('explorer'); await gate; return 'explorer-result' } },
+  ], { signal: controller.signal, concurrency: 2, retries: 0 })
+
+  for (let attempt = 0; attempt < 10 && started.length < 2; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+  assert.deepEqual(new Set(started), new Set(['product', 'explorer']))
+  release()
+  assert.deepEqual(new Set(await run), new Set(['product-result', 'explorer-result']))
+})
+
+test('LangGraph keeps successful agents when one specialist fails', async () => {
+  const controller = new AbortController()
+  const failures = []
+  const results = await runComponentAgentGraph([
+    { id: 'motion-job', variant: 'expressive', run: async () => 'motion-result' },
+    { id: 'product-job', variant: 'conservative', run: async () => { throw new Error('product unavailable') } },
+    { id: 'explorer-job', variant: 'experimental', run: async () => 'explorer-result' },
+  ], {
+    signal: controller.signal,
+    concurrency: 3,
+    retries: 0,
+    onFailed: (jobId, error) => failures.push(`${jobId}:${error.message}`),
+  })
+
+  // Parallel graph completion order is intentionally not part of the contract.
+  assert.deepEqual(new Set(results), new Set(['motion-result', 'explorer-result']))
+  assert.deepEqual(failures, ['product-job:product unavailable'])
 })
 
 test('event stream replays ordered events with stable motion cues', () => {
@@ -259,6 +299,193 @@ test('atomic session planning skips the remote planner request', async () => {
   assert.equal(plan.components.length, 1)
   assert.equal(completedPlans.length, 1)
   assert.equal(completedPlans[0], plan)
+})
+
+test('candidate generation exposes the full team and starts two opinions for an atomic slot', async () => {
+  let releaseLeadWave
+  const leadWaveGate = new Promise((resolve) => { releaseLeadWave = resolve })
+  const started = []
+  const rendered = []
+  const queuedAgents = []
+  const lifecycle = []
+  const fetchImpl = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    const system = body.messages[0].content
+    const input = JSON.parse(body.messages[1].content)
+    let result
+    if (system.includes('UI Draft Renderer')) {
+      result = { previewHtml: '<main>draft</main>' }
+    } else {
+      started.push(input.variant)
+      if (input.variant !== 'experimental') await leadWaveGate
+      const file = input.outputSchema.files[0]
+      result = {
+        previewHtml: `<main>${input.variant}</main>`,
+        files: [{ path: file.path, content: 'export default function View(){ return null }' }],
+        entryFile: file.path,
+        previewProps: {},
+        notes: [],
+      }
+    }
+    const payload = `data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify(result) } }] })}\n\ndata: [DONE]\n\n`
+    return new Response(payload, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  }
+  const session = new HarnessSession('做一个计数器', {
+    kimi: { apiKey: 'test', baseUrl: 'https://example.test/v1', model: 'test', codeModel: 'test', temperature: 0 },
+    fetchImpl,
+    persist: false,
+    candidateCount: 3,
+    runtime: { compile: async () => ({ ok: true }) },
+  })
+  session.subscribe(({ event }) => {
+    lifecycle.push(event.type)
+    if (event.type === 'render.ready') rendered.push(event.candidateId)
+    if (event.type === 'component.queued') queuedAgents.push(`${event.variant}:${event.agent.id}`)
+  })
+  await session.start()
+  const generation = session.chooseVisualDirection({
+    id: 'test', name: 'Test', description: '',
+    visualDNA: {
+      concept: 'playful', mood: ['lively'], colors: {}, typography: {},
+      geometry: { radius: '24px', border: 'soft', density: 'normal' },
+      motion: { personality: 'spring', duration: '300ms', easing: 'ease-out' },
+      compositionRules: [],
+    },
+  })
+  for (let attempt = 0; attempt < 20 && started.length < 2; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+  assert.deepEqual(new Set(started), new Set(['expressive', 'conservative']))
+  assert.equal(rendered.length, 0)
+  assert.deepEqual(new Set(queuedAgents), new Set(['expressive:motion', 'conservative:product', 'experimental:explorer']))
+  assert.equal(lifecycle.indexOf('component.started') > lifecycle.lastIndexOf('component.queued'), true)
+
+  releaseLeadWave()
+  await generation
+  assert.deepEqual(new Set(started), new Set(['expressive', 'conservative', 'experimental']))
+  assert.deepEqual(new Set(queuedAgents), new Set(['expressive:motion', 'conservative:product', 'experimental:explorer']))
+  assert.equal(rendered.length, 3)
+  assert.equal(session.candidates.length, 3)
+  assert.deepEqual(new Set(session.candidates.map(({ variant, agent }) => `${variant}:${agent.id}`)), new Set([
+    'expressive:motion', 'conservative:product', 'experimental:explorer',
+  ]))
+})
+
+test('stopping generation suppresses late source and render events', async () => {
+  let releaseBuilders
+  const builderGate = new Promise((resolve) => { releaseBuilders = resolve })
+  const events = []
+  const fetchImpl = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    const system = body.messages[0].content
+    const input = JSON.parse(body.messages[1].content)
+    let result
+    if (system.includes('UI Draft Renderer')) {
+      result = { previewHtml: '<main>draft</main>' }
+    } else {
+      // Deliberately ignore AbortSignal to reproduce providers that finish a
+      // buffered response after the user has pressed Stop.
+      await builderGate
+      const file = input.outputSchema.files[0]
+      result = {
+        previewHtml: `<main>${input.variant}</main>`,
+        files: [{ path: file.path, content: 'export default function View(){ return null }' }],
+        entryFile: file.path,
+        previewProps: {},
+        notes: [],
+      }
+    }
+    const payload = `data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify(result) } }] })}\n\ndata: [DONE]\n\n`
+    return new Response(payload, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  }
+  const session = new HarnessSession('做一个计数器', {
+    kimi: { apiKey: 'test', baseUrl: 'https://example.test/v1', model: 'test', codeModel: 'test', temperature: 0 },
+    fetchImpl,
+    persist: false,
+    candidateCount: 3,
+    runtime: { compile: async () => ({ ok: true }) },
+  })
+  session.subscribe(({ event }) => events.push(event.type))
+  await session.start()
+  const generation = session.chooseVisualDirection({
+    id: 'test', name: 'Test', description: '',
+    visualDNA: {
+      concept: 'playful', mood: [], colors: {}, typography: {},
+      geometry: { radius: '24px', border: 'soft', density: 'normal' },
+      motion: { personality: 'spring', duration: '300ms', easing: 'ease-out' },
+      compositionRules: [],
+    },
+  })
+  for (let attempt = 0; attempt < 20 && !events.includes('component.started'); attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+  session.stopGeneration()
+  const cancelledAt = events.lastIndexOf('generation.cancelled')
+  releaseBuilders()
+  await generation
+
+  assert.notEqual(cancelledAt, -1)
+  assert.equal(events.slice(cancelledAt + 1).includes('source.ready'), false)
+  assert.equal(events.slice(cancelledAt + 1).includes('render.ready'), false)
+})
+
+test('committing the final slot keeps it active for visible confirmation', () => {
+  const previous = useStore.getState()
+  const candidateId = 'counter-expressive'
+  useStore.setState({
+    phase: 'idle',
+    harnessMode: 'demo',
+    activeSlotId: 'counter',
+    slots: [{
+      def: {
+        id: 'counter', role: '完整计数器', width: 'fluid', inputs: [], outputs: [], dependencies: [], previewH: 320,
+        candidates: [],
+      },
+      status: 'ready',
+      candidates: [{
+        def: {
+          id: candidateId, label: 'Motion Agent · 活泼版', style: 'expressive', blurb: '', Component: () => null,
+        },
+        status: 'rendered', code: '', progress: 1, streamMs: 0, anim: 'anim-pop', seed: 1,
+      }],
+      tryOnId: candidateId,
+    }],
+  })
+
+  useStore.getState().confirmCandidate('counter', candidateId)
+  assert.equal(useStore.getState().slots[0].selectedId, candidateId)
+  assert.equal(useStore.getState().activeSlotId, 'counter')
+  useStore.setState(previous, true)
+})
+
+test('builder variants require structural and motion differences', () => {
+  const direction = {
+    id: 'test', name: 'Test', description: '',
+    visualDNA: {
+      concept: 'playful', mood: [], colors: {}, typography: {},
+      geometry: { radius: '24px', border: 'soft', density: 'normal' },
+      motion: { personality: 'spring', duration: '300ms', easing: 'ease-out' },
+      compositionRules: [],
+    },
+  }
+  const component = {
+    id: 'counter', role: '完整计数器', slot: 'page-main', width: 'fluid',
+    inputs: [], outputs: [], dependencies: ['react', 'motion'], designTokens: [],
+  }
+  const plan = {
+    project: { name: 'Counter', description: '' }, pages: [], visualDirections: [direction], components: [component],
+  }
+  const messagesByVariant = ['conservative', 'expressive', 'experimental'].map((variant) =>
+    builderMessages({ requirement: '计数器', plan, direction, component, variant }))
+  const profiles = messagesByVariant.map((messages) => {
+    return JSON.parse(messages[1].content).variantProfile
+  })
+  assert.equal(new Set(profiles.map(({ composition }) => composition)).size, 3)
+  assert.equal(new Set(profiles.map(({ interaction }) => interaction)).size, 3)
+  assert.match(profiles[2].composition, /不得只是换颜色/)
+  assert.match(messagesByVariant[0][0].content, /Product Agent/)
+  assert.match(messagesByVariant[1][0].content, /Motion Agent/)
+  assert.match(messagesByVariant[2][0].content, /Explorer Agent/)
 })
 
 test('full browser session plans, builds, compiles, selects and reviews', async () => {

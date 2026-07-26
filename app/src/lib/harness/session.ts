@@ -1,4 +1,5 @@
 import { HarnessEventStream } from './events.ts'
+import { builderAgentFor } from './agents.ts'
 import { BrowserKimiClient, extractStreamingJsonString } from './kimi.ts'
 import { createAtomicPlan, normalizePlanCohesion } from './plan-cohesion.ts'
 import { builderMessages, draftPreviewMessages, fixerMessages, plannerMessages, reviewerMessages, revisionMessages } from './prompts.ts'
@@ -19,7 +20,11 @@ import type {
   VisualDirection,
 } from './types.ts'
 
-const VARIANTS: CandidateVariant[] = ['conservative', 'expressive', 'experimental']
+// Lead with the most immediately legible option, then fill in two deliberately
+// different alternatives. `generateCandidates` runs these as progressive waves
+// so an atomic, single-slot component does not spend three model requests before
+// the user sees anything useful.
+const VARIANTS: CandidateVariant[] = ['expressive', 'conservative', 'experimental']
 
 export class HarnessSession {
   readonly sessionId: string
@@ -155,39 +160,67 @@ export class HarnessSession {
         .slice(0, this.#options.candidateCount)
         .map((variant) => ({ component, variant }))
     })
-    const scheduler = new TaskScheduler<CandidateArtifact>({
-      concurrency: this.#options.concurrency,
-      retries: this.#options.retries,
-      signal: generationSignal,
-      onRetry: (taskId, attempt, error) => {
-        this.events.publish({ type: 'task.retrying', taskId, attempt, error: error.message }, 'generating')
-      },
-      onFailed: (taskId, error) => {
-        this.events.publish({ type: 'task.failed', taskId, error: error.message }, 'generating')
-      },
+    // Put every specialist on the rail immediately. Execution can still happen
+    // in cost-aware waves, but the user should see the full design team and its
+    // queued/active state from the first frame instead of discovering agents
+    // only after an earlier candidate has completely finished.
+    const preparedJobs = jobs.map(({ component, variant }) => {
+      const candidateId = `${component.id}-${variant}-${crypto.randomUUID().slice(0, 8)}`
+      const taskId = `build:${candidateId}`
+      this.events.publish({
+        type: 'component.queued', componentId: component.id, candidateId, variant,
+        agent: builderAgentFor(variant),
+      }, 'generating')
+      return { component, variant, candidateId, taskId }
     })
-
-    // Interleaving makes every slot receive its first candidate before second variants start.
-    for (const variant of VARIANTS) {
-      for (const { component, variant: jobVariant } of jobs.filter((job) => job.variant === variant)) {
-        const candidateId = `${component.id}-${jobVariant}-${crypto.randomUUID().slice(0, 8)}`
-        const taskId = `build:${candidateId}`
-        this.events.publish({ type: 'component.queued', componentId: component.id, candidateId, variant: jobVariant }, 'generating')
-        scheduler.add({
+    const invokeAgentGraph = async (graphBatch: typeof preparedJobs) => {
+      // Keep LangGraph out of the initial UI bundle; load the browser runtime
+      // only after the user has selected a visual direction.
+      const { runComponentAgentGraph } = await import('./generation-graph.ts')
+      const graphJobs = graphBatch.map(({ component, variant: jobVariant, candidateId, taskId }) => {
+        return {
           id: taskId,
-          run: async (signal) => this.#buildCandidate(component.id, candidateId, jobVariant, signal),
-        })
-      }
+          variant: jobVariant,
+          run: () => this.#buildCandidate(component.id, candidateId, jobVariant, generationSignal),
+        }
+      })
+      return runComponentAgentGraph(graphJobs, {
+        signal: generationSignal,
+        concurrency: this.#options.concurrency,
+        retries: this.#options.retries,
+        onRetry: (taskId, attempt, error) => {
+          this.events.publish({ type: 'task.retrying', taskId, attempt, error: error.message }, 'generating')
+        },
+        onFailed: (taskId, error) => {
+          this.events.publish({ type: 'task.failed', taskId, error: error.message }, 'generating')
+        },
+      })
     }
 
     try {
-      const results = await scheduler.run()
+      // A single atomic slot benefits from two immediately comparable opinions.
+      // Larger pages stay at one active agent per slot to keep request pressure
+      // bounded; all remaining agents are already visible as queued cards.
+      const leadVariantCount = targets.length === 1 ? Math.min(2, this.#options.candidateCount) : 1
+      const leadVariants = new Set(VARIANTS.slice(0, leadVariantCount))
+      const firstWave = preparedJobs.filter((job) => leadVariants.has(job.variant))
+      const laterWave = preparedJobs.filter((job) => !leadVariants.has(job.variant))
+      const results = [
+        ...(firstWave.length ? await invokeAgentGraph(firstWave) : []),
+        ...(generationSignal.aborted || !laterWave.length ? [] : await invokeAgentGraph(laterWave)),
+      ]
       if (generationSignal.aborted) return []
       this.#phase = 'selecting'
       const ready = results.filter((candidate) => this.#candidates.get(candidate.id)?.runtimeStatus === 'rendered').length
-      this.events.publish({ type: 'generation.completed', ready, expected: jobs.length }, 'ready')
+      this.events.publish({ type: 'generation.completed', ready, expected: preparedJobs.length }, 'ready')
       await this.#persist()
       return results
+    } catch (reason) {
+      // LangGraph propagates AbortError from graph.invoke even when individual
+      // agent nodes correctly suppress their work. User-initiated Stop is a
+      // normal terminal path, not a failed generation request.
+      if (generationSignal.aborted) return []
+      throw reason
     } finally {
       this.#generationRunning = false
       if (this.#generationController?.signal === generationSignal) this.#generationController = null
@@ -204,7 +237,7 @@ export class HarnessSession {
     let publishedPreviewLength = 0
     let sourceReady = false
     const publishStreamingPreview = (response: string) => {
-      if (sourceReady) return
+      if (sourceReady || signal.aborted) return
       const preview = extractStreamingJsonString(response, 'previewHtml')
       const visibleText = preview.value.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
       if (visibleText.length < 2 || preview.value.length < 48) return
@@ -219,6 +252,7 @@ export class HarnessSession {
       requirement: this.requirement,
       direction: this.#direction,
       component,
+      variant,
     }), {
       signal,
       model: this.#options.kimi.model,
@@ -247,8 +281,9 @@ export class HarnessSession {
         receivedChars = 0
       },
     })
+    if (signal.aborted) throw signal.reason ?? new DOMException('生成已停止', 'AbortError')
     sourceReady = true
-    const candidate = parseCandidate(raw, { id: candidateId, componentId, variant })
+    const candidate = parseCandidate(raw, { id: candidateId, componentId, variant, agent: builderAgentFor(variant) })
     this.#candidates.set(candidateId, candidate)
     for (const file of candidate.files) {
       this.events.publish({ type: 'file.created', candidateId, path: file.path }, 'generating')
@@ -285,7 +320,9 @@ export class HarnessSession {
     if (!runtime) return
     candidate.runtimeStatus = 'compiling'
     this.events.publish({ type: 'compile.started', candidateId }, 'compiling')
-    await this.reportCompile(candidateId, await runtime.compile(candidate, signal))
+    const result = await runtime.compile(candidate, signal)
+    if (signal.aborted) return
+    await this.reportCompile(candidateId, result)
   }
 
   async #repair(candidate: CandidateArtifact, errors: string[], signal: AbortSignal) {
@@ -303,7 +340,10 @@ export class HarnessSession {
       model: this.#options.kimi.codeModel,
       maxTokens: 6000,
     })
-    const fixed = parseCandidate(raw, { id: candidate.id, componentId: candidate.componentId, variant: candidate.variant })
+    const fixed = parseCandidate(raw, {
+      id: candidate.id, componentId: candidate.componentId, variant: candidate.variant,
+      agent: candidate.agent ?? builderAgentFor(candidate.variant),
+    })
     this.#assertSameFileBoundary(candidate, fixed)
     fixed.fixAttempts = candidate.fixAttempts
     this.#candidates.set(candidate.id, fixed)
@@ -369,7 +409,10 @@ export class HarnessSession {
         model: this.#options.kimi.codeModel,
         maxTokens: 6000,
       })
-      const revised = parseCandidate(raw, { id: current.id, componentId: current.componentId, variant: current.variant })
+      const revised = parseCandidate(raw, {
+        id: current.id, componentId: current.componentId, variant: current.variant,
+        agent: current.agent ?? builderAgentFor(current.variant),
+      })
       this.#assertSameFileBoundary(current, revised)
       revised.fixAttempts = current.fixAttempts
       if (this.#options.runtime) {

@@ -5,6 +5,37 @@ type BabelModule = typeof import('@babel/standalone')
 const compiledCache = new Map<string, string>()
 let babelPromise: Promise<BabelModule> | null = null
 
+export type SandboxSelectionBridge = {
+  slotId: string
+  candidateId: string
+  revisionId: string
+}
+
+type SandboxSelectionMessage = SandboxSelectionBridge & {
+  source: 'wtpt-sandbox'
+  token: string
+  type: 'selection'
+}
+
+export function isSandboxSelectionMessage(
+  event: Pick<MessageEvent, 'data' | 'source'>,
+  sourceWindow: WindowProxy | null,
+  token: string,
+  revisionId: string,
+): event is MessageEvent<SandboxSelectionMessage> {
+  if (!sourceWindow || event.source !== sourceWindow) return false
+  const data = event.data as Partial<SandboxSelectionMessage> | null
+  return Boolean(
+    data
+    && data.source === 'wtpt-sandbox'
+    && data.type === 'selection'
+    && data.token === token
+    && data.revisionId === revisionId
+    && typeof data.slotId === 'string'
+    && typeof data.candidateId === 'string',
+  )
+}
+
 function loadBabel() {
   babelPromise ??= import('@babel/standalone')
   return babelPromise
@@ -49,11 +80,26 @@ export async function createSandboxDocument(
   candidate: CandidateArtifact,
   vars: Record<string, string> = {},
   token = crypto.randomUUID(),
+  selection?: SandboxSelectionBridge,
 ) {
   const code = escapeScript(await transpile(candidate))
   const css = escapeScript(candidate.files.filter((file) => file.path.endsWith('.css')).map((file) => file.content).join('\n'))
   const props = escapeScript(JSON.stringify(candidate.previewProps).replace(/</g, '\\u003c'))
   const rootVars = cssVariables(vars)
+  const selectionBridge = selection
+    ? `<script>
+    document.addEventListener('pointerdown',()=>{
+      parent.postMessage({
+        source:'wtpt-sandbox',
+        token:${JSON.stringify(token)},
+        type:'selection',
+        slotId:${JSON.stringify(selection.slotId)},
+        candidateId:${JSON.stringify(selection.candidateId)},
+        revisionId:${JSON.stringify(selection.revisionId)}
+      },'*');
+    },true);
+  </script>`
+    : ''
   return `<!doctype html>
 <html>
 <head>
@@ -65,6 +111,7 @@ export async function createSandboxDocument(
     window.addEventListener('error',(event)=>reportSandboxError(event.error||event.message));
     window.addEventListener('unhandledrejection',(event)=>reportSandboxError(event.reason));
   </script>
+  ${selectionBridge}
   <script async src="https://cdn.tailwindcss.com"></script>
   <style>
     html,body,#root{margin:0;min-height:100%;width:100%;overflow:auto}body{background:transparent;color:var(--dna-text,#171717);font-family:var(--dna-font,system-ui,sans-serif)}*{box-sizing:border-box}

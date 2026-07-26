@@ -64,6 +64,13 @@ export type PagePlan = {
 
 export type CandidateVariant = 'conservative' | 'expressive' | 'experimental'
 
+export type BuilderAgentPersona = {
+  id: 'motion' | 'product' | 'explorer'
+  name: string
+  role: string
+  mission: string
+}
+
 export type GeneratedFile = {
   path: string
   content: string
@@ -73,6 +80,8 @@ export type CandidateArtifact = {
   id: string
   componentId: string
   variant: CandidateVariant
+  /** Present on newly generated candidates; optional for restored v1 snapshots. */
+  agent?: BuilderAgentPersona
   files: GeneratedFile[]
   entryFile: string
   previewProps: Record<string, unknown>
@@ -106,7 +115,7 @@ export type GenerationEvent =
   | { type: 'plan.activity'; receivedChars: number }
   | { type: 'plan.completed'; plan: PagePlan }
   | { type: 'direction.selected'; direction: VisualDirection }
-  | { type: 'component.queued'; componentId: string; candidateId: string; variant: CandidateVariant }
+  | { type: 'component.queued'; componentId: string; candidateId: string; variant: CandidateVariant; agent: BuilderAgentPersona }
   | { type: 'component.started'; componentId: string; candidateId: string }
   | { type: 'component.activity'; componentId: string; candidateId: string; receivedChars: number }
   | { type: 'preview.updated'; componentId: string; candidateId: string; html: string; complete: boolean }

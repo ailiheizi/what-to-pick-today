@@ -272,9 +272,9 @@ export const useStore = create<Store>((set, get) => {
         candidates: [...slot.candidates, {
           def: {
             id: event.candidateId,
-            label: `${slot.def.role} · ${labels[event.variant]}`,
+            label: `${event.agent.name} · ${labels[event.variant]}`,
             style: event.variant,
-            blurb: event.variant === 'conservative' ? '清晰稳妥' : event.variant === 'expressive' ? '更鲜明、更有动感' : '大胆实验构图',
+            blurb: `${event.agent.role} · ${event.variant === 'conservative' ? '清晰稳妥' : event.variant === 'expressive' ? '更鲜明、更有动感' : '大胆实验构图'}`,
             Component: EmptyGeneratedComponent,
           },
           status: 'queued',
@@ -526,7 +526,10 @@ export const useStore = create<Store>((set, get) => {
     sfx.playConfirm()
     if (!replacing) {
       const next = get().slots.find((item) => item.status !== 'selected')
-      set({ activeSlotId: next ? next.def.id : null })
+      // Keep the final committed card visible. Clearing the active slot made a
+      // successful choice disappear at the exact moment the user needed
+      // confirmation that it had been added to the page.
+      set({ activeSlotId: next ? next.def.id : slotId })
     }
     if (get().phase === 'generating') maybeStartReview()
   }
@@ -583,7 +586,7 @@ export const useStore = create<Store>((set, get) => {
         pushChat('ai', '收到。真实 Planner 正在分析需求、拆分组件合同和页面槽位…')
         pushHistory('plan', 'AI Planner 收到需求')
         const runtime = new SandboxRuntimeAdapter({ getCssVariables: () => getDirection(get().directionId ?? 'apple').vars })
-        const session = new HarnessSession(text, { kimi: loadKimiSettings(), concurrency: 4, candidateCount: 1, runtime })
+        const session = new HarnessSession(text, { kimi: loadKimiSettings(), concurrency: 4, candidateCount: 3, runtime })
         activeHarness = session
         unsubscribeHarness = session.subscribe((event) => {
           if (activeHarness === session) handleHarnessEvent(event)
@@ -644,7 +647,7 @@ export const useStore = create<Store>((set, get) => {
         const session = activeHarness
         set({ directionId: id, phase: 'generating', stopped: false })
         pushHistory('direction', `选定视觉底板 · 分支「${dir.name}」`)
-        pushChat('ai', `底板「${dir.name}」已锁定。组件模型正在为每个槽位优先生成 1 个首屏候选；需要时可继续补充更多版本。`)
+        pushChat('ai', `底板「${dir.name}」已锁定。Motion、Product、Explorer 三位 Agent 已进场；候选卡会立即出现，主推方案优先生成，其余方案渐进补齐。`)
         sfx.playStart()
         void session.chooseVisualDirection(harnessDirection(id)).catch((reason: unknown) => {
           if (activeHarness !== session) return
