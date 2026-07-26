@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { KeyRound, ShieldCheck, X } from 'lucide-react'
 import { useStore } from '../../lib/store'
 import { clearKimiApiKey, loadKimiSettings, saveKimiSettings } from '../../lib/harness/settings.ts'
+import { isLocalModelProxyBase, LOCAL_MODEL_PROXY_PATH } from '../../lib/harness/local-proxy.ts'
 import { playClick } from '../../lib/sound'
 
 export default function ApiSettingsModal() {
@@ -13,6 +14,7 @@ export default function ApiSettingsModal() {
   const [codeModel, setCodeModel] = useState(initial.codeModel)
   const [remember, setRemember] = useState(false)
   const [saved, setSaved] = useState(false)
+  const usingLocalProxy = isLocalModelProxyBase(baseUrl)
 
   if (!settingsOpen) return null
 
@@ -59,6 +61,12 @@ export default function ApiSettingsModal() {
           placeholder="sk-…"
           className="mt-1.5 w-full rounded-2xl border border-neutral-200 bg-neutral-50 px-4 py-3 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-neutral-900/20"
         />
+        <div className="mt-1.5 flex items-center justify-between gap-3 text-[9px] text-neutral-400">
+          <span>{usingLocalProxy ? '本地 .env 代理将于服务端注入 Key，此处可以留空' : 'Key 仅保存在浏览器；不会进入导出项目'}</span>
+          {import.meta.env.DEV && (
+            <button type="button" onClick={() => setBaseUrl(LOCAL_MODEL_PROXY_PATH)} className="shrink-0 font-bold text-neutral-600 hover:text-neutral-900">使用本地代理</button>
+          )}
+        </div>
         <div className="mt-3 grid grid-cols-[1fr_120px_120px] gap-2">
           <div>
             <label className="block text-[10px] font-bold text-neutral-500">Base URL</label>
@@ -85,7 +93,7 @@ export default function ApiSettingsModal() {
 
         <div className="mt-5 flex gap-2">
           <button onClick={clear} className="hover-pop px-4 py-2.5 rounded-full border border-neutral-200 text-xs font-bold text-neutral-500">清除 Key</button>
-          <button onClick={save} disabled={!apiKey.trim() || !baseUrl.trim() || !model.trim() || !codeModel.trim()} className="hover-pop flex-1 px-4 py-2.5 rounded-full bg-neutral-900 text-white text-xs font-bold shadow-lg disabled:opacity-30">
+          <button onClick={save} disabled={(!apiKey.trim() && !usingLocalProxy) || !baseUrl.trim() || !model.trim() || !codeModel.trim()} className="hover-pop flex-1 px-4 py-2.5 rounded-full bg-neutral-900 text-white text-xs font-bold shadow-lg disabled:opacity-30">
             {saved ? '✓ 已保存' : '保存设置'}
           </button>
         </div>

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { HarnessEventStream } from '../src/lib/harness/events.ts'
 import { BrowserKimiClient, extractStreamingJsonString, parseJson } from '../src/lib/harness/kimi.ts'
+import { isAllowedLocalProxyOrigin, isLocalModelProxyBase, rewriteModelProxyPath, splitModelApiBase } from '../src/lib/harness/local-proxy.ts'
 import { createAtomicPlan, normalizePlanCohesion } from '../src/lib/harness/plan-cohesion.ts'
 import { parseCandidate, parsePlan } from '../src/lib/harness/schemas.ts'
 import { TaskScheduler } from '../src/lib/harness/scheduler.ts'
@@ -77,6 +78,26 @@ test('kimi client preserves the browser fetch receiver', async () => {
     return Promise.resolve(new Response('data: {"choices":[{"delta":{"content":"{\\"ok\\":true}"}}]}\n\ndata: [DONE]\n\n'))
   }
   const client = new BrowserKimiClient({ apiKey: 'test', baseUrl: 'https://example.test/v1', model: 'test', temperature: 0 }, fetchImpl)
+  const result = await client.completeJson([], { signal: new AbortController().signal })
+  assert.deepEqual(result, { ok: true })
+})
+
+test('local model proxy supports keyless browser requests and safe upstream rewriting', async () => {
+  assert.equal(isLocalModelProxyBase('/api/model'), true)
+  assert.equal(isLocalModelProxyBase('http://127.0.0.1:7100/api/model/'), true)
+  assert.equal(isLocalModelProxyBase('https://example.test/api/model'), false)
+  assert.deepEqual(splitModelApiBase('https://provider.test/v1/'), { target: 'https://provider.test', prefix: '/v1' })
+  assert.equal(rewriteModelProxyPath('/api/model/chat/completions?stream=1', '/v1'), '/v1/chat/completions?stream=1')
+  assert.equal(isAllowedLocalProxyOrigin(undefined, '127.0.0.1:7100'), true)
+  assert.equal(isAllowedLocalProxyOrigin('http://127.0.0.1:7100', '127.0.0.1:7100'), true)
+  assert.equal(isAllowedLocalProxyOrigin('https://malicious.example', '127.0.0.1:7100'), false)
+
+  const fetchImpl = async (url, init) => {
+    assert.equal(url, '/api/model/chat/completions')
+    assert.equal(init.headers.authorization, undefined)
+    return new Response('data: {"choices":[{"delta":{"content":"{\\"ok\\":true}"}}]}\n\ndata: [DONE]\n\n')
+  }
+  const client = new BrowserKimiClient({ apiKey: '', baseUrl: '/api/model', model: 'test', temperature: 0 }, fetchImpl)
   const result = await client.completeJson([], { signal: new AbortController().signal })
   assert.deepEqual(result, { ok: true })
 })

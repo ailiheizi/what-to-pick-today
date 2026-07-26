@@ -12,7 +12,17 @@ React UI
 → IndexedDB
 ```
 
-如果模型供应商没有开放浏览器 CORS，高级用户仍可把 `baseUrl` 指向自己部署的兼容代理；这只是兼容选项，不是产品默认架构。
+如果模型供应商没有开放浏览器 CORS，生产部署仍可把 `baseUrl` 指向自己部署的兼容代理。仓库本地开发额外提供 Vite-only `/api/model` 转发：它从根目录 `.env` 读取上游地址和临时 Key，只运行在开发服务器，不进入生产 bundle，也不改变纯前端产品架构。
+
+```text
+AI_PROXY_BASE_URL=https://provider.example/v1
+AI_PROXY_API_KEY=temporary-key
+
+应用 Base URL=/api/model
+浏览器 API Key=留空
+```
+
+开发代理只接受无 Origin 的本地工具请求或与 Vite 页面同源的浏览器请求；其他网页跨站访问会返回 403，避免借 localhost 间接使用 `.env` 中的 Key。
 
 ## 已实现模块
 

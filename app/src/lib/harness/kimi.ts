@@ -1,4 +1,5 @@
 import type { KimiSettings } from './types.ts'
+import { isLocalModelProxyBase } from './local-proxy.ts'
 
 type ChatMessage = {
   role: 'system' | 'user' | 'assistant'
@@ -95,14 +96,13 @@ export class BrowserKimiClient {
   }
 
   async completeJson(messages: ChatMessage[], options: CompletionOptions): Promise<unknown> {
-    if (!this.#settings.apiKey.trim()) throw new Error('请先配置 AI API Key')
+    if (!this.#settings.apiKey.trim() && !isLocalModelProxyBase(this.#settings.baseUrl)) throw new Error('请先配置 AI API Key')
     const model = options.model ?? this.#settings.model
+    const headers: Record<string, string> = { 'content-type': 'application/json' }
+    if (this.#settings.apiKey.trim()) headers.authorization = `Bearer ${this.#settings.apiKey}`
     const response = await this.#fetch(`${this.#settings.baseUrl.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',
-      headers: {
-        authorization: `Bearer ${this.#settings.apiKey}`,
-        'content-type': 'application/json',
-      },
+      headers,
       body: JSON.stringify({
         model,
         messages,
