@@ -1,4 +1,5 @@
 import type { KimiSettings } from './types.ts'
+import { isLocalModelProxyBase } from './local-proxy.ts'
 
 const CONFIG_KEY = 'what-to-pick-today:kimi-config:v1'
 const SESSION_KEY = 'what-to-pick-today:kimi-key:session'
@@ -48,6 +49,14 @@ export function clearKimiApiKey() {
   localStorage.removeItem(PERSISTENT_KEY)
 }
 
+export function isModelApiConfigured(settings: KimiSettings) {
+  const hasCredentials = Boolean(settings.apiKey.trim()) || isLocalModelProxyBase(settings.baseUrl)
+  return hasCredentials
+    && Boolean(settings.baseUrl.trim())
+    && Boolean(settings.model.trim())
+    && Boolean(settings.codeModel.trim())
+}
+
 export function hasKimiApiKey() {
-  return Boolean(loadKimiSettings().apiKey.trim())
+  return isModelApiConfigured(loadKimiSettings())
 }

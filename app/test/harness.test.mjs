@@ -8,6 +8,7 @@ import { parseCandidate, parsePlan } from '../src/lib/harness/schemas.ts'
 import { TaskScheduler } from '../src/lib/harness/scheduler.ts'
 import { HarnessSession } from '../src/lib/harness/session.ts'
 import { createSandboxDocument } from '../src/lib/harness/sandbox-runtime.ts'
+import { isModelApiConfigured } from '../src/lib/harness/settings.ts'
 import { migrateLocalEnvContent } from '../../scripts/migrate-local-env.mjs'
 
 test('scheduler enforces concurrency and retries failed work', async () => {
@@ -101,6 +102,18 @@ test('local model proxy supports keyless browser requests and safe upstream rewr
   const client = new BrowserKimiClient({ apiKey: '', baseUrl: '/api/model', model: 'test', temperature: 0 }, fetchImpl)
   const result = await client.completeJson([], { signal: new AbortController().signal })
   assert.deepEqual(result, { ok: true })
+})
+
+test('local proxy counts as a complete API configuration without a browser key', () => {
+  assert.equal(isModelApiConfigured({
+    apiKey: '', baseUrl: '/api/model', model: 'planner', codeModel: 'builder', temperature: 0.7,
+  }), true)
+  assert.equal(isModelApiConfigured({
+    apiKey: '', baseUrl: 'https://provider.test/v1', model: 'planner', codeModel: 'builder', temperature: 0.7,
+  }), false)
+  assert.equal(isModelApiConfigured({
+    apiKey: 'configured', baseUrl: 'https://provider.test/v1', model: '', codeModel: 'builder', temperature: 0.7,
+  }), false)
 })
 
 test('legacy local credentials migrate to dotenv without exposing or dropping values', () => {

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { CircleStop, RefreshCw, SendHorizonal } from 'lucide-react'
 import { getActiveHarness, useStore } from '../../lib/store'
+import { hasKimiApiKey } from '../../lib/harness'
 import { playClick } from '../../lib/sound'
 
 const PLACEHOLDER: Record<string, string> = {
@@ -16,6 +17,7 @@ export default function Composer() {
   const { phase, submitPrompt, sendFollowUp, stopGeneration, regenerate, stopped, slots, harnessMode } = useStore()
   const [text, setText] = useState('')
   const [sent, setSent] = useState(false)
+  const apiConfigured = hasKimiApiKey()
 
   const send = () => {
     const t = text.trim()
@@ -80,7 +82,11 @@ export default function Composer() {
         </div>
       </div>
       <div className="mt-1.5 text-center text-[9px] text-neutral-500/80">
-        {harnessMode === 'kimi' ? 'Browser Harness · BYOK · OpenAI-compatible API · iframe 沙箱运行' : '未配置 Key · 当前使用本地 Mock Harness 演示'}
+        {harnessMode === 'kimi'
+          ? 'Browser Harness · BYOK · OpenAI-compatible API · iframe 沙箱运行'
+          : apiConfigured
+            ? '真实 API 已就绪 · 下一次生成使用 Browser Harness'
+            : '未配置 API · 当前使用本地 Mock Harness 演示'}
       </div>
     </div>
   )
