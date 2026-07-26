@@ -20,4 +20,13 @@ export default defineConfig([
       globals: globals.browser,
     },
   },
+  {
+    // Candidate registries and shadcn-style UI modules intentionally export
+    // component collections, variants and helpers from the same file. They are
+    // libraries rather than Fast Refresh entry modules.
+    files: ['src/candidates/**/*.{ts,tsx}', 'src/components/ui/**/*.{ts,tsx}'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+    },
+  },
 ])
