@@ -11,11 +11,12 @@ const REPO_URL = 'https://github.com/ailiheizi/what-to-pick-today'
 
 export default function StarModal() {
   const { starOpen, closeStar, prompt, scenario, directionId, slots, history, tokensStreamed, startedAt, harnessMode } = useStore()
-  if (!starOpen || !scenario) return null
+  if (!starOpen) return null
 
   const dir = getDirection(directionId ?? 'apple')
 
   const exportReact = () => {
+    if (!scenario) return
     if (harnessMode === 'kimi') {
       try {
         const session = getActiveHarness()
@@ -33,6 +34,7 @@ export default function StarModal() {
   }
 
   const exportJSON = () => {
+    if (!scenario) return
     if (harnessMode === 'kimi') {
       const session = getActiveHarness()
       if (!session) {
@@ -80,22 +82,28 @@ export default function StarModal() {
         <div className="inline-flex w-14 h-14 rounded-full bg-gradient-to-br from-amber-300 to-orange-400 items-center justify-center shadow-lg anim-float">
           <PartyPopper size={26} className="text-white" />
         </div>
-        <h2 className="mt-3 text-xl font-black text-neutral-900">页面拼合完成！</h2>
+        <h2 className="mt-3 text-xl font-black text-neutral-900">
+          {scenario ? '页面拼合完成！' : '喜欢「今天选什么？」吗？'}
+        </h2>
         <p className="mt-1 text-xs text-neutral-500">
-          {scenario.projectName} · {dir.name} · {slots.length}/{slots.length} 槽位已扣合
+          {scenario
+            ? `${scenario.projectName} · ${dir.name} · ${slots.length}/${slots.length} 槽位已扣合`
+            : '这是一个开源的 AI 原生 UI 生成与挑选工具'}
         </p>
 
         {/* 选择摘要 */}
-        <div className="mt-4 flex flex-wrap justify-center gap-1.5">
-          {slots.map((s) => {
-            const cand = s.candidates.find((c) => c.def.id === s.selectedId)
-            return (
-              <span key={s.def.id} className="anim-pop px-2.5 py-1 rounded-full bg-neutral-100 text-[10px] font-medium text-neutral-600">
-                {s.def.role} · {cand?.def.label.split('·')[1]?.trim() ?? '—'}
-              </span>
-            )
-          })}
-        </div>
+        {scenario && (
+          <div className="mt-4 flex flex-wrap justify-center gap-1.5">
+            {slots.map((s) => {
+              const cand = s.candidates.find((c) => c.def.id === s.selectedId)
+              return (
+                <span key={s.def.id} className="anim-pop px-2.5 py-1 rounded-full bg-neutral-100 text-[10px] font-medium text-neutral-600">
+                  {s.def.role} · {cand?.def.label.split('·')[1]?.trim() ?? '—'}
+                </span>
+              )
+            })}
+          </div>
+        )}
 
         {/* Star 引导 */}
         <div className="mt-5 rounded-2xl bg-gradient-to-br from-neutral-900 to-neutral-700 p-4 text-left">
@@ -118,28 +126,32 @@ export default function StarModal() {
         </div>
 
         {/* 导出 */}
-        <div className="mt-4 grid grid-cols-2 gap-2">
-          <button
-            onClick={exportReact}
-            className="hover-pop flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-full bg-neutral-900 text-white text-xs font-bold shadow-lg"
-          >
-            <Download size={13} /> {harnessMode === 'kimi' ? '导出完整项目' : '导出 React 源码'}
-          </button>
-          <button
-            onClick={exportJSON}
-            className="hover-pop flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-full bg-white border border-neutral-200 text-xs font-bold text-neutral-600"
-          >
-            <FileJson size={13} /> {harnessMode === 'kimi' ? '导出 Harness JSON' : '导出 JSON'}
-          </button>
-        </div>
-        <div className="mt-2 text-[9px] text-neutral-400">
-          {harnessMode === 'kimi'
-            ? '项目包包含完整 Vite + React 多文件源码、依赖配置、Visual DNA 与导出元数据'
-            : 'React 源码为单文件 GeneratedPage.tsx，依赖 tailwindcss + recharts + lucide-react'}
-        </div>
+        {scenario && (
+          <>
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <button
+                onClick={exportReact}
+                className="hover-pop flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-full bg-neutral-900 text-white text-xs font-bold shadow-lg"
+              >
+                <Download size={13} /> {harnessMode === 'kimi' ? '导出完整项目' : '导出 React 源码'}
+              </button>
+              <button
+                onClick={exportJSON}
+                className="hover-pop flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-full bg-white border border-neutral-200 text-xs font-bold text-neutral-600"
+              >
+                <FileJson size={13} /> {harnessMode === 'kimi' ? '导出 Harness JSON' : '导出 JSON'}
+              </button>
+            </div>
+            <div className="mt-2 text-[9px] text-neutral-400">
+              {harnessMode === 'kimi'
+                ? '项目包包含完整 Vite + React 多文件源码、依赖配置、Visual DNA 与导出元数据'
+                : 'React 源码为单文件 GeneratedPage.tsx，依赖 tailwindcss + recharts + lucide-react'}
+            </div>
+          </>
+        )}
 
         <button onClick={closeStar} className="mt-3 text-[11px] font-medium text-neutral-400 hover:text-neutral-700">
-          继续调整页面 →
+          {scenario ? '继续调整页面 →' : '关闭'}
         </button>
       </div>
     </div>

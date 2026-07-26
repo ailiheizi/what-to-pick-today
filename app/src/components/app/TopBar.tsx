@@ -34,6 +34,7 @@ export default function TopBar() {
   }
 
   const busy = phase === 'planning' || phase === 'generating' || phase === 'reviewing'
+  const canReset = phase !== 'idle' || Boolean(prompt || scenario || slots.length || tokensStreamed)
 
   return (
     <header className="relative z-30 flex items-center gap-3 px-5 py-3">
@@ -73,8 +74,13 @@ export default function TopBar() {
         </button>
         <button
           onClick={reset}
-          title="重新开始"
-          className="hover-pop w-9 h-9 rounded-full bg-white/70 backdrop-blur border border-white/60 shadow-sm flex items-center justify-center text-neutral-500 hover:rotate-[-120deg] transition-transform duration-500"
+          disabled={!canReset}
+          title={canReset ? '重新开始' : '当前没有可重置的内容'}
+          className={`w-9 h-9 rounded-full bg-white/70 backdrop-blur border border-white/60 shadow-sm flex items-center justify-center transition-all duration-500 ${
+            canReset
+              ? 'hover-pop text-neutral-500 hover:rotate-[-120deg]'
+              : 'text-neutral-300 cursor-not-allowed opacity-60'
+          }`}
         >
           <RotateCcw size={15} />
         </button>
