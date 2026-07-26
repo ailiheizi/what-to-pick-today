@@ -301,7 +301,7 @@ test('atomic session planning skips the remote planner request', async () => {
   assert.equal(completedPlans[0], plan)
 })
 
-test('candidate generation exposes the full team and starts two opinions for an atomic slot', async () => {
+test('candidate generation exposes the full team and starts every specialist at once', async () => {
   let releaseLeadWave
   const leadWaveGate = new Promise((resolve) => { releaseLeadWave = resolve })
   const started = []
@@ -317,7 +317,7 @@ test('candidate generation exposes the full team and starts two opinions for an 
       result = { previewHtml: '<main>draft</main>' }
     } else {
       started.push(input.variant)
-      if (input.variant !== 'experimental') await leadWaveGate
+      await leadWaveGate
       const file = input.outputSchema.files[0]
       result = {
         previewHtml: `<main>${input.variant}</main>`,
@@ -352,10 +352,13 @@ test('candidate generation exposes the full team and starts two opinions for an 
       compositionRules: [],
     },
   })
-  for (let attempt = 0; attempt < 20 && started.length < 2; attempt += 1) {
+  // Every specialist must be in flight before any of them finishes. Serializing
+  // them into waves left later agents visibly "queued" for the entire duration
+  // of the first build, which reads as a stalled product.
+  for (let attempt = 0; attempt < 40 && started.length < 3; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 0))
   }
-  assert.deepEqual(new Set(started), new Set(['expressive', 'conservative']))
+  assert.deepEqual(new Set(started), new Set(['expressive', 'conservative', 'experimental']))
   assert.equal(rendered.length, 0)
   assert.deepEqual(new Set(queuedAgents), new Set(['expressive:motion', 'conservative:product', 'experimental:explorer']))
   assert.equal(lifecycle.indexOf('component.started') > lifecycle.lastIndexOf('component.queued'), true)
@@ -455,6 +458,74 @@ test('committing the final slot keeps it active for visible confirmation', () =>
   useStore.getState().confirmCandidate('counter', candidateId)
   assert.equal(useStore.getState().slots[0].selectedId, candidateId)
   assert.equal(useStore.getState().activeSlotId, 'counter')
+  useStore.setState(previous, true)
+})
+
+test('committing a middle slot advances forward instead of jumping back', async () => {
+  const previous = useStore.getState()
+  const slot = (id, status) => ({
+    def: {
+      id, role: id, width: 'fluid', inputs: [], outputs: [], dependencies: [], previewH: 320, candidates: [],
+    },
+    status,
+    candidates: [{
+      def: { id: `${id}-cand`, label: `${id} 活泼版`, style: 'expressive', blurb: '', Component: () => null },
+      status: 'rendered', code: '', progress: 1, streamMs: 0, anim: 'anim-pop', seed: 1,
+    }],
+    tryOnId: `${id}-cand`,
+  })
+
+  // "hero" is deliberately left unselected and sits *above* the slot being
+  // confirmed, so searching from the top of the list would bounce back to it.
+  useStore.setState({
+    phase: 'idle',
+    harnessMode: 'demo',
+    activeSlotId: 'stats',
+    slots: [slot('hero', 'ready'), slot('stats', 'ready'), slot('table', 'ready')],
+  })
+
+  useStore.getState().confirmCandidate('stats', 'stats-cand')
+  assert.equal(useStore.getState().slots[1].selectedId, 'stats-cand')
+  // The confirmed card must linger so the success animation is visible.
+  assert.equal(useStore.getState().activeSlotId, 'stats')
+
+  await new Promise((resolve) => setTimeout(resolve, 900))
+  assert.equal(useStore.getState().activeSlotId, 'table')
+
+  // Nothing unselected remains after "table", so it may fall back to the
+  // earlier skipped slot rather than stranding the user.
+  useStore.getState().confirmCandidate('table', 'table-cand')
+  await new Promise((resolve) => setTimeout(resolve, 900))
+  assert.equal(useStore.getState().activeSlotId, 'hero')
+  useStore.setState(previous, true)
+})
+
+test('an explicit slot pick cancels the pending auto-advance', async () => {
+  const previous = useStore.getState()
+  const slot = (id, status) => ({
+    def: {
+      id, role: id, width: 'fluid', inputs: [], outputs: [], dependencies: [], previewH: 320, candidates: [],
+    },
+    status,
+    candidates: [{
+      def: { id: `${id}-cand`, label: `${id} 活泼版`, style: 'expressive', blurb: '', Component: () => null },
+      status: 'rendered', code: '', progress: 1, streamMs: 0, anim: 'anim-pop', seed: 1,
+    }],
+    tryOnId: `${id}-cand`,
+  })
+
+  useStore.setState({
+    phase: 'idle',
+    harnessMode: 'demo',
+    activeSlotId: 'stats',
+    slots: [slot('hero', 'ready'), slot('stats', 'ready'), slot('table', 'ready')],
+  })
+
+  useStore.getState().confirmCandidate('stats', 'stats-cand')
+  useStore.getState().setActiveSlot('hero')
+  await new Promise((resolve) => setTimeout(resolve, 900))
+  // The user's own choice must survive the auto-advance timer firing.
+  assert.equal(useStore.getState().activeSlotId, 'hero')
   useStore.setState(previous, true)
 })
 
@@ -565,4 +636,90 @@ test('sandbox transpiles TSX and rejects relative module imports', async () => {
     ...candidate,
     files: [{ path: 'src/Preview.tsx', content: "import View from './View'; export default View" }],
   }), /相对模块导入/)
+})
+
+test('a slow draft cannot overwrite the builder preview it lost the race to', async () => {
+  const encoder = new TextEncoder()
+  let releaseDraft
+  const draftGate = new Promise((resolve) => { releaseDraft = resolve })
+  const previews = []
+  const sse = (obj) => `data: ${JSON.stringify({ choices: [{ delta: { content: obj } }] })}\n\n`
+  const fetchImpl = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    const system = body.messages[0].content
+    const input = JSON.parse(body.messages[1].content)
+    if (system.includes('Planner')) {
+      const plan = {
+        project: { name: 'p', description: 'd' },
+        pages: [{ id: 'home', name: 'Home', route: '/', slots: ['card'] }],
+        components: [{
+          id: 'card', role: '卡片', slot: 'card', width: 'fluid',
+          inputs: [], outputs: [], dependencies: ['react'], designTokens: [],
+        }],
+        visualDirections: [],
+      }
+      return new Response(`${sse(JSON.stringify(plan))}data: [DONE]\n\n`)
+    }
+    if (system.includes('UI Draft Renderer')) {
+      // The draft is still streaming when the builder paints, and its document
+      // is shorter — exactly the shape that used to clobber the newer preview.
+      return new Response(new ReadableStream({
+        async start(controller) {
+          await draftGate
+          controller.enqueue(encoder.encode(sse(`{"previewHtml":"<main>${'draft'.repeat(20)}`)))
+          controller.enqueue(encoder.encode(sse('</main>"}')))
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+          controller.close()
+        },
+      }))
+    }
+    const file = input.outputSchema.files[0]
+    const tail = {
+      files: [{ path: file.path, content: 'export default function View(){ return null }' }],
+      entryFile: file.path, previewProps: {}, notes: [],
+    }
+    return new Response(new ReadableStream({
+      async start(controller) {
+        // Builder paints first...
+        controller.enqueue(encoder.encode(sse(`{"previewHtml":"<main>${'builder'.repeat(40)}</main>"`)))
+        // ...then the draft is unblocked while the builder is still streaming.
+        releaseDraft()
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        controller.enqueue(encoder.encode(sse(`,${JSON.stringify(tail).slice(1)}`)))
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+        controller.close()
+      },
+    }))
+  }
+  const session = new HarnessSession('做一个卡片', {
+    kimi: { apiKey: 'test', baseUrl: 'https://example.test/v1', model: 'test', codeModel: 'test', temperature: 0 },
+    fetchImpl,
+    persist: false,
+    candidateCount: 1,
+    runtime: { compile: async () => ({ ok: true }) },
+  })
+  session.subscribe(({ event }) => {
+    if (event.type === 'preview.updated') previews.push(event.html)
+  })
+  await session.start()
+  await session.chooseVisualDirection({
+    id: 'test', name: 'Test', description: '',
+    visualDNA: {
+      concept: 'plain', mood: [], colors: {}, typography: {},
+      geometry: { radius: '8px', border: 'soft', density: 'normal' },
+      motion: { personality: 'spring', duration: '200ms', easing: 'ease-out' },
+      compositionRules: [],
+    },
+  })
+  await new Promise((resolve) => setTimeout(resolve, 30))
+
+  assert.equal(previews.length > 0, true)
+  assert.equal(previews.some((html) => html.includes('builder')), true)
+  // An early draft may legitimately paint first. What must never happen is the
+  // draft reclaiming the preview after the builder has taken it over: the
+  // builder's document is the one that becomes the component.
+  const firstBuilder = previews.findIndex((html) => html.includes('builder'))
+  const lateDraft = previews.findIndex((html, index) => index > firstBuilder && html.includes('draft'))
+  assert.equal(lateDraft, -1)
+  assert.equal(previews.at(-1).includes('builder'), true)
 })

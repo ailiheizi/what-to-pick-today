@@ -8,11 +8,31 @@ import { fakeSource } from './fakecode'
 import { DIRECTIONS, getDirection } from './dna'
 import * as sfx from './sound'
 import { HarnessSession, SandboxRuntimeAdapter, hasKimiApiKey, loadKimiSettings } from './harness/index.ts'
+import { classifyError } from './harness/errors.ts'
+import type { ErrorKind, ErrorSurface, ErrorVerdict } from './harness/errors.ts'
 import type { CandidateArtifact, EventEnvelope, PagePlan, VisualDirection } from './harness/types.ts'
 
 export type Phase = 'idle' | 'planning' | 'direction' | 'generating' | 'reviewing' | 'done'
 export type CandStatus = 'queued' | 'streaming' | 'compiling' | 'rendered' | 'failed'
 export type SlotStatus = 'planned' | 'generating' | 'ready' | 'selected'
+
+/**
+ * A classified failure, ready to render.
+ *
+ * This replaces the bare `string` that `harnessError` used to hold: every
+ * failure now arrives through `classifyError`, so the UI can tell a stale API
+ * key (`surface: 'settings'`) apart from a network blip (`surface: 'chat'`)
+ * instead of painting both as the same red banner. `message` is the Chinese
+ * copy that is safe to show; `detail` keeps the raw thrown text for debugging
+ * and must never be used as the primary message.
+ */
+export interface HarnessError {
+  kind: ErrorKind
+  surface: ErrorSurface
+  message: string
+  detail?: string
+  retryable: boolean
+}
 
 export interface CandidateState {
   def: CandidateDef
@@ -29,7 +49,15 @@ export interface CandidateState {
   streamPreviewComplete?: boolean
   /** 真实 Harness 生成的源码 artifact；存在时使用 iframe 沙箱预览 */
   artifact?: CandidateArtifact
+  /**
+   * User-facing failure copy for this card. Always the classified Chinese
+   * message, never the raw thrown text — `CandidateRail` renders it directly.
+   */
   error?: string
+  /** Classified kind behind `error`, so the card can vary its affordance. */
+  errorKind?: ErrorKind
+  /** Raw untranslated failure text. Debugging only; never rendered alone. */
+  errorDetail?: string
 }
 
 /** 候选入场动效池 —— 每次生成都随机不一样 */
@@ -74,6 +102,14 @@ let timers: ReturnType<typeof setTimeout>[] = []
 let uid = 1
 const now = () => Date.now()
 
+// Bumped whenever the user picks a slot themselves, which cancels any pending
+// post-confirmation auto-advance so an explicit choice always wins.
+let slotFocusEpoch = 0
+// How long a just-confirmed candidate stays on screen before the rail moves on.
+// The rail is keyed on activeSlotId, so advancing immediately unmounted the card
+// mid-animation and the user never saw their choice land.
+const CONFIRM_DWELL_MS = 700
+
 function clearTimers() {
   timers.forEach(clearTimeout)
   timers = []
@@ -106,7 +142,11 @@ interface Store {
   /** 完成弹窗（Star 引导 + 导出） */
   starOpen: boolean
   harnessMode: 'demo' | 'kimi'
-  harnessError: string | null
+  /**
+   * The last failure worth showing globally. `null` whenever there is nothing
+   * to show — in particular, a user-initiated stop leaves this `null`.
+   */
+  harnessError: HarnessError | null
   settingsOpen: boolean
   openSettings: () => void
   closeSettings: () => void
@@ -125,6 +165,12 @@ interface Store {
   sendFollowUp: (text: string) => void
   toggleMute: () => void
   reset: () => void
+  /**
+   * The harness → store bridge. Normally driven by `session.subscribe`; exposed
+   * on the store so the failure-presentation paths can be exercised without
+   * standing up a real `HarnessSession` and a live model API.
+   */
+  applyHarnessEvent: (envelope: EventEnvelope) => void
 }
 
 let activeHarness: HarnessSession | null = null
@@ -223,6 +269,27 @@ function buildHarnessSlots(scenario: Scenario): SlotState[] {
   }))
 }
 
+/** Narrow a verdict down to the fields the UI needs, dropping transport metadata. */
+function toHarnessError(verdict: ErrorVerdict): HarnessError {
+  return {
+    kind: verdict.kind,
+    surface: verdict.surface,
+    message: verdict.message,
+    retryable: verdict.retryable,
+    ...(verdict.detail ? { detail: verdict.detail } : {}),
+  }
+}
+
+/**
+ * `compile.failed` / `repair.exhausted` arrive as a list of compiler messages
+ * rather than a thrown value. Shaping them like a `CompileResult` lets
+ * `classifyError` recognise a blocked import inside the compiler output and
+ * downgrade "编译失败" to the more accurate dependency verdict.
+ */
+function classifyCompileErrors(errors: string[]): ErrorVerdict {
+  return classifyError({ ok: false, errors, message: errors.join('\n') })
+}
+
 export const useStore = create<Store>((set, get) => {
   const pushChat = (role: ChatMsg['role'], text: string) =>
     set((s) => ({ chat: [...s.chat, { id: uid++, role, text, ts: now() }] }))
@@ -244,6 +311,60 @@ export const useStore = create<Store>((set, get) => {
     }))
 
   const findCandidateSlot = (candidateId: string) => get().slots.find((slot) => slot.candidates.some((candidate) => candidate.def.id === candidateId))
+
+  /**
+   * Attach a classified verdict to one candidate card.
+   *
+   * The card gets the Chinese `message`; the raw thrown text goes to
+   * `errorDetail` so it stays greppable in devtools without ever being the
+   * primary thing the user reads.
+   */
+  const markCandidate = (candidateId: string, verdict: ErrorVerdict, status: CandStatus = 'failed') => {
+    const slot = findCandidateSlot(candidateId)
+    if (!slot) return false
+    patchCand(slot.def.id, candidateId, () => ({
+      status,
+      error: verdict.message,
+      errorKind: verdict.kind,
+      errorDetail: verdict.detail,
+    }))
+    return true
+  }
+
+  /**
+   * The single presentation path for every harness failure.
+   *
+   * `verdict.surface` is the only thing that decides where a failure lands:
+   * - `none`     user-initiated stop. Nothing is set, nothing is said. In
+   *              particular `harnessError` stays `null` so a Stop can never
+   *              render as a crash.
+   * - `settings` the user must fix credentials before anything can work, so the
+   *              API settings modal is opened for them.
+   * - `inline`   one bad candidate out of several. When the card already carries
+   *              the message (`inlineHandled`), the global banner stays clean.
+   * - `chat`     a page-level or transient condition, announced in the system
+   *              transcript.
+   *
+   * Deliberately does not retry: `backoffMs` belongs to the session layer, and
+   * the store's only job here is presentation.
+   */
+  const surfaceVerdict = (
+    verdict: ErrorVerdict,
+    options: { label: string; note?: string; inlineHandled?: boolean } = { label: '生成失败' },
+  ) => {
+    if (verdict.surface === 'none') return verdict
+    if (verdict.surface === 'inline' && options.inlineHandled) return verdict
+    set({ harnessError: toHarnessError(verdict) })
+    // Always the classifier's Chinese copy — never `verdict.detail`, which is
+    // the raw thrown text and is kept for debugging only.
+    pushChat('sys', `${options.label}：${verdict.message}${options.note ?? ''}`)
+    if (verdict.surface === 'settings') get().openSettings()
+    return verdict
+  }
+
+  /** Classify a rejected harness promise and present it. */
+  const reportFailure = (reason: unknown, label: string, note?: string) =>
+    surfaceVerdict(classifyError(reason), { label, note })
 
   const handleHarnessEvent = (envelope: EventEnvelope) => {
     const event = envelope.event
@@ -317,6 +438,8 @@ export const useStore = create<Store>((set, get) => {
         progress: artifact.files.reduce((total, file) => total + file.content.length, 0),
         status: 'compiling',
         error: undefined,
+        errorKind: undefined,
+        errorDetail: undefined,
       }))
       return
     }
@@ -326,15 +449,21 @@ export const useStore = create<Store>((set, get) => {
       return
     }
     if (event.type === 'compile.failed' || event.type === 'repair.exhausted') {
-      const slot = findCandidateSlot(event.candidateId)
-      if (slot) patchCand(slot.def.id, event.candidateId, () => ({ status: event.type === 'repair.exhausted' ? 'failed' : 'compiling', error: event.errors.join('\n') }))
+      // Compiler output is inline by nature: it belongs to one card, and the
+      // other candidates in the slot are still perfectly usable. Classifying it
+      // also promotes a blocked import out of the generic "编译失败" bucket.
+      const verdict = classifyCompileErrors(event.errors)
+      // `compile.failed` still has repair attempts left, so the card stays in
+      // `compiling` and reads as "正在自动修复" rather than dead.
+      markCandidate(event.candidateId, verdict, event.type === 'repair.exhausted' ? 'failed' : 'compiling')
       return
     }
     if (event.type === 'render.ready') {
       const slot = findCandidateSlot(event.candidateId)
       if (!slot) return
       patchCand(slot.def.id, event.candidateId, () => ({
-        status: 'rendered', anim: eventAnim(envelope.motionCue), error: undefined,
+        status: 'rendered', anim: eventAnim(envelope.motionCue),
+        error: undefined, errorKind: undefined, errorDetail: undefined,
         streamPreviewHtml: undefined, streamPreviewComplete: undefined,
       }))
       const current = get().slots.find((item) => item.def.id === slot.def.id)
@@ -371,21 +500,36 @@ export const useStore = create<Store>((set, get) => {
       return
     }
     if (event.type === 'task.failed' || event.type === 'revision.failed') {
-      const message = event.error
-      if (event.type === 'task.failed' && event.taskId.startsWith('build:')) {
-        const candidateId = event.taskId.slice('build:'.length)
-        const slot = findCandidateSlot(candidateId)
-        if (slot) patchCand(slot.def.id, candidateId, () => ({ status: 'failed', error: message }))
-      }
-      set({ harnessError: message })
-      pushChat('sys', `生成任务失败：${message}`)
+      const verdict = classifyError(event.error)
+      // A user-initiated stop reaches this path too (LangGraph re-throws the
+      // AbortError as a task failure). Presenting it made "停止" read as a
+      // crash, so let the classifier decide and bail out on `surface: 'none'`.
+      if (verdict.surface === 'none') return
+      // Pin the failure to the card that produced it when we can identify one.
+      // `task.failed` uses a `build:<candidateId>` task id; `revision.failed`
+      // carries the candidate directly.
+      const candidateId = event.type === 'revision.failed'
+        ? event.candidateId
+        : event.taskId.startsWith('build:') ? event.taskId.slice('build:'.length) : null
+      const inlineHandled = candidateId ? markCandidate(candidateId, verdict) : false
+      surfaceVerdict(verdict, {
+        label: event.type === 'revision.failed' ? 'Revision 失败' : '生成任务失败',
+        inlineHandled,
+      })
       return
     }
     if (event.type === 'generation.cancelled') {
+      // Cancellation is a normal terminal path. In-flight cards are parked as
+      // failed so they stop spinning, but with the classifier's "生成已停止"
+      // copy and an `aborted` kind, so the UI can style them as stopped rather
+      // than broken — and no global error is raised.
+      const verdict = classifyError(new Error('生成已停止'))
       set((state) => ({
         slots: state.slots.map((slot) => ({
           ...slot,
-          candidates: slot.candidates.map((candidate) => ['streaming', 'compiling'].includes(candidate.status) ? { ...candidate, status: 'failed' as const, error: '已停止生成' } : candidate),
+          candidates: slot.candidates.map((candidate) => ['streaming', 'compiling'].includes(candidate.status)
+            ? { ...candidate, status: 'failed' as const, error: verdict.message, errorKind: verdict.kind, errorDetail: undefined }
+            : candidate),
         })),
       }))
     }
@@ -475,9 +619,11 @@ export const useStore = create<Store>((set, get) => {
         const session = activeHarness
         void session.review().catch((reason: unknown) => {
           if (activeHarness !== session) return
-          const message = reason instanceof Error ? reason.message : String(reason)
-          set({ phase: 'done', harnessError: message })
-          pushChat('sys', `Reviewer 失败：${message}。已保留当前拼合结果。`)
+          reportFailure(reason, 'Reviewer 失败', '。已保留当前拼合结果。')
+          // Every slot is already committed, so the page itself is finished
+          // whether the Reviewer succeeded, failed, or was stopped. Land on
+          // `done` either way — just without an error banner on a stop.
+          set({ phase: 'done' })
         })
       } else {
         startReview()
@@ -515,7 +661,8 @@ export const useStore = create<Store>((set, get) => {
   }
 
   const commitCandidate = (slotId: string, candId: string) => {
-    const slot = get().slots.find((item) => item.def.id === slotId)
+    const index = get().slots.findIndex((item) => item.def.id === slotId)
+    const slot = index < 0 ? undefined : get().slots[index]
     const candidate = slot?.candidates.find((item) => item.def.id === candId)
     if (!slot || !candidate || candidate.status !== 'rendered') return
     const replacing = slot.status === 'selected'
@@ -525,11 +672,28 @@ export const useStore = create<Store>((set, get) => {
     pushHistory('select', `${replacing ? '更换' : '扣合'} ${slot.def.role} ← ${candidate.def.label}`)
     sfx.playConfirm()
     if (!replacing) {
-      const next = get().slots.find((item) => item.status !== 'selected')
-      // Keep the final committed card visible. Clearing the active slot made a
-      // successful choice disappear at the exact moment the user needed
-      // confirmation that it had been added to the page.
-      set({ activeSlotId: next ? next.def.id : slotId })
+      // Advance to the next unselected slot *after* this one so the user keeps
+      // moving down the page. Searching from the top instead would bounce them
+      // back to an earlier skipped slot after every confirmation.
+      const after_ = get().slots.slice(index + 1).find((item) => item.status !== 'selected')
+      const before = after_ ? undefined : get().slots.slice(0, index).find((item) => item.status !== 'selected')
+      const next = after_ ?? before
+      // Hold the committed card on screen first, then move on. Advancing in the
+      // same tick unmounted it before the confirmation animation could play.
+      if (next) {
+        set({ activeSlotId: slotId })
+        const epoch = slotFocusEpoch
+        after(CONFIRM_DWELL_MS, () => {
+          if (epoch !== slotFocusEpoch) return
+          if (get().activeSlotId !== slotId) return
+          set({ activeSlotId: next.def.id })
+        })
+      } else {
+        // Keep the final committed card visible. Clearing the active slot made a
+        // successful choice disappear at the exact moment the user needed
+        // confirmation that it had been added to the page.
+        set({ activeSlotId: slotId })
+      }
     }
     if (get().phase === 'generating') maybeStartReview()
   }
@@ -593,9 +757,10 @@ export const useStore = create<Store>((set, get) => {
         })
         void session.start().catch((reason: unknown) => {
           if (activeHarness !== session) return
-          const message = reason instanceof Error ? reason.message : String(reason)
-          set({ phase: 'idle', harnessError: message })
-          pushChat('sys', `AI Planner 失败：${message}`)
+          const verdict = reportFailure(reason, 'AI Planner 失败')
+          // Only drop back to the empty prompt screen when the run really died.
+          // A user-initiated stop keeps whatever the planner already produced.
+          if (verdict.surface !== 'none') set({ phase: 'idle' })
         })
         return
       }
@@ -651,9 +816,7 @@ export const useStore = create<Store>((set, get) => {
         sfx.playStart()
         void session.chooseVisualDirection(harnessDirection(id)).catch((reason: unknown) => {
           if (activeHarness !== session) return
-          const message = reason instanceof Error ? reason.message : String(reason)
-          set({ harnessError: message })
-          pushChat('sys', `候选生成失败：${message}`)
+          reportFailure(reason, '候选生成失败')
         })
         return
       }
@@ -686,16 +849,18 @@ export const useStore = create<Store>((set, get) => {
           if (activeHarness === session) commitCandidate(slotId, candId)
         }).catch((reason: unknown) => {
           if (activeHarness !== session) return
-          const message = reason instanceof Error ? reason.message : String(reason)
-          set({ harnessError: message })
-          pushChat('sys', `候选确认失败：${message}`)
+          reportFailure(reason, '候选确认失败')
         })
         return
       }
       commitCandidate(slotId, candId)
     },
 
-    setActiveSlot: (slotId) => set({ activeSlotId: slotId }),
+    setActiveSlot: (slotId) => {
+      // An explicit pick cancels any pending post-confirmation auto-advance.
+      slotFocusEpoch += 1
+      set({ activeSlotId: slotId })
+    },
 
     undo: () => {
       const s = get()
@@ -707,8 +872,7 @@ export const useStore = create<Store>((set, get) => {
           if (activeHarness === session) commitUndo(lastSelected.def.id)
         }).catch((reason: unknown) => {
           if (activeHarness !== session) return
-          const message = reason instanceof Error ? reason.message : String(reason)
-          set({ harnessError: message })
+          reportFailure(reason, '撤销失败')
         })
         return
       }
@@ -729,9 +893,7 @@ export const useStore = create<Store>((set, get) => {
           sfx.playShift()
         }).catch((reason: unknown) => {
           if (activeHarness !== session) return
-          const message = reason instanceof Error ? reason.message : String(reason)
-          set({ harnessError: message })
-          pushChat('sys', `设计分支切换失败：${message}`)
+          reportFailure(reason, '设计分支切换失败')
         })
         return
       }
@@ -742,7 +904,9 @@ export const useStore = create<Store>((set, get) => {
     },
 
     stopGeneration: () => {
-      set({ stopped: true })
+      // Stopping is a normal terminal path. Clear any leftover banner so the
+      // stop screen never reads as a crash, and let the classifier own the copy.
+      set({ stopped: true, harnessError: null })
       if (get().harnessMode === 'kimi') activeHarness?.stopGeneration()
       clearTimers()
       pushHistory('sys', '已停止接收生成流')
@@ -759,9 +923,7 @@ export const useStore = create<Store>((set, get) => {
         set({ stopped: false, phase: 'generating', harnessError: null })
         void session.generateCandidates(componentIds).catch((reason: unknown) => {
           if (activeHarness !== session) return
-          const message = reason instanceof Error ? reason.message : String(reason)
-          set({ harnessError: message })
-          pushChat('sys', `重新生成失败：${message}`)
+          reportFailure(reason, '重新生成失败')
         })
         return
       }
@@ -806,9 +968,7 @@ export const useStore = create<Store>((set, get) => {
           pushChat('ai', '局部修改完成，候选已重新编译。')
         }).catch((reason: unknown) => {
           if (activeHarness !== session) return
-          const message = reason instanceof Error ? reason.message : String(reason)
-          set({ harnessError: message })
-          pushChat('sys', `Revision 失败：${message}`)
+          reportFailure(reason, 'Revision 失败')
         })
         return
       }
@@ -821,6 +981,8 @@ export const useStore = create<Store>((set, get) => {
       sfx.setMuted(m)
       set({ muted: m })
     },
+
+    applyHarnessEvent: handleHarnessEvent,
 
     reset: () => {
       clearTimers()

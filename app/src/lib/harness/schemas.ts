@@ -66,13 +66,24 @@ export function parseCandidate(value: unknown, input: {
   componentId: string
   variant: CandidateVariant
   agent?: BuilderAgentPersona
+  /** Staleness token minted by the session; never accepted from model output. */
+  attemptId?: string
 }): CandidateArtifact {
   const candidate = candidateSchema.parse(value)
   candidate.files.forEach((file) => assertSafePath(file.path))
   if (!candidate.files.some((file) => file.path === candidate.entryFile)) throw new Error('entryFile 不在生成文件列表中')
+  // Only the four payload fields the schema declares are copied out, and the
+  // caller-owned identity is applied *after* them. A model that echoes back
+  // `id`, `componentId`, `variant`, `agent` or `attemptId` therefore cannot
+  // claim another candidate's slot or forge a fresh attempt token, even if the
+  // schema were ever loosened to passthrough.
+  const { files, entryFile, previewProps, notes } = candidate
   return {
+    files,
+    entryFile,
+    previewProps,
+    notes,
     ...input,
-    ...candidate,
     runtimeStatus: 'source_ready',
     compileErrors: [],
     fixAttempts: 0,

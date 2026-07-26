@@ -71,4 +71,39 @@
 1. 材质效果（如苹果风的 backdrop-blur、过渡动画）挂在共享过渡常量 `T` 上，组件统一引用。
 2. 新增风格 = 新增一组 token，无需改动任何组件代码；组件表现自动一致。
 3. Reviewer / Fixer 的表面类补丁只允许改 token，不允许给单个组件写一次性样式。
-4. 布局类（flex/grid/spacing）不受限制，属于组件的"内部表现自由"。
+4. 布局类（flex/grid/spacing）不受限制，属于组件的“内部表现自由”。
+
+#### 已知偏差（2026-07-26 记录）
+
+上面这张表目前**只对工具自身 UI 生效**，尚未对沙箱里的 AI 生成组件生效：
+
+- `app/src/lib/harness/prompts.ts:88`、`:92`、`:137` 要求 Builder 和 Draft Renderer「使用内联样式或末尾 style 标签，绑定 `--dna-*` CSS 变量」，没有提到 `.dna-card` 等语义类。
+- `app/src/lib/harness/schemas.ts` 只校验文件路径、依赖白名单和 `entryFile` 归属，没有任何 class 合规检查。
+- `.dna-*` 类只定义在 `app/src/index.css:337` 起，使用者是 `CanvasStage.tsx`、`LeftPanel.tsx` 等工具 UI。候选预览是独立的 `srcdoc` iframe 文档，加载不到这些类。
+
+规则本身不撤销：「放开审美，管住接口」仍然成立，只是当前的收口层从语义类退到了 CSS 变量。
+
+TODO：确定 `.dna-*` 语义层是否要覆盖沙箱内的生成组件。若要，需要同时改三处——把语义类注入 `createSandboxDocument` 的 `<style>`、在 Builder 提示词中改为强制使用、在 `schemas.ts` 中补上校验。在此之前，本节表格的适用范围以这条偏差记录为准。
+
+## 2026-07-26 · 取代性技术决策
+
+以下两条取代早期文档中的描述。`product-plan.md` §9 和 `ai-generation-harness.md` §7 尚未同步，阅读时以本节为准。
+
+### 应用框架 = Vite + react-router，不是 Next.js
+
+`product-plan.md` §9 写的是「React / Next.js」。实际技术栈是 Vite 7 + `react-router` 7（`app/package.json`：`"dev": "vite"`、`react-router ^7.6.1`，无 `next` 依赖）。产物是可静态部署的 SPA。
+
+理由：产品定位就是「不要求账号、云数据库或维护者后端」的纯前端工具。Next.js 的服务端能力在这个架构里没有使用场景，反而会引入部署假设。
+
+### 运行沙箱 = 手写 CSP iframe，不是 Sandpack / WebContainers
+
+`ai-generation-harness.md` §7 与 `product-plan.md` §9 把 Sandpack、WebContainers 列为候选沙箱方案。二者都没有被采用，也都不在 `app/package.json` / `package-lock.json` 中。
+
+实际实现是 `app/src/lib/harness/sandbox-runtime.ts`：
+
+- `@babel/standalone` 在浏览器内转译 TSX（TypeScript + React classic runtime + commonjs）。
+- 生成带 CSP `<meta>` 的 `srcdoc`，注入 `sandbox="allow-scripts"` iframe。
+- React 19、`react-dom`、`lucide-react`、`motion` 以 ESM 从 `https://esm.sh` 加载，Tailwind 从 `https://cdn.tailwindcss.com` 加载。
+- 沙箱内的 `require()` 只认这四个白名单包，其余抛错；不支持相对模块导入。
+
+理由：候选组件的依赖面已经被白名单收窄到四个包，不需要完整 npm 或开发服务器。手写 iframe 的包体和启动成本远低于 Sandpack / WebContainers，并且能精确控制 CSP、编译超时、错误上报和选择桥这几件本产品特有的事。

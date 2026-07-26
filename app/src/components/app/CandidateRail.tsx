@@ -1,5 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Bot, Check, CircleAlert, Layers, Loader2, MousePointer2, Sparkles } from 'lucide-react'
+import {
+  Bot,
+  Check,
+  CircleAlert,
+  CircleCheck,
+  Compass,
+  Hourglass,
+  Layers,
+  LayoutPanelLeft,
+  Loader2,
+  MousePointer2,
+  Sparkles,
+  Zap,
+} from 'lucide-react'
 import { useStore, type CandidateState } from '../../lib/store'
 import { playClick, playTick } from '../../lib/sound'
 import { PlayfulLoader } from './playful'
@@ -7,39 +20,80 @@ import GeneratedCandidatePreview from './GeneratedCandidatePreview'
 import StreamingHtmlPreview from './StreamingHtmlPreview'
 import { getDirection } from '../../lib/dna'
 
-const FALLBACK_AGENTS = {
+type AgentIdentity = { id: 'motion' | 'product' | 'explorer'; name: string; role: string }
+
+const FALLBACK_AGENTS: Record<CandidateState['def']['style'], AgentIdentity> = {
   expressive: { id: 'motion', name: 'Motion Agent', role: '动效与情绪反馈' },
   conservative: { id: 'product', name: 'Product Agent', role: '产品结构与可用性' },
   experimental: { id: 'explorer', name: 'Explorer Agent', role: '探索式构图与交互' },
-} as const
+}
+
+/** 每个 Agent 一个专属字形：生成中光看图标就能分辨是谁在干活。 */
+const AGENT_GLYPHS = { motion: Zap, product: LayoutPanelLeft, explorer: Compass } as const
+
+const AGENT_ROSTER: AgentIdentity[] = Object.values(FALLBACK_AGENTS)
 
 const GENERATION_STEPS = ['排队', '草图', '写组件', '编译', '完成'] as const
 
-function candidateActivity(cand: CandidateState) {
+type CandidateStage = 'queued' | 'drafting' | 'coding' | 'compiling' | 'repairing' | 'ready' | 'failed'
+
+const STAGE_TEXT: Record<CandidateStage, string> = {
+  queued: '排队中',
+  drafting: '起草中',
+  coding: '生成代码',
+  compiling: '编译中',
+  repairing: '修复中',
+  ready: '已就绪',
+  failed: '失败',
+}
+
+const STAGE_STEP: Record<CandidateStage, number> = {
+  queued: 0,
+  drafting: 1,
+  coding: 2,
+  compiling: 3,
+  repairing: 3,
+  ready: 4,
+  failed: 3,
+}
+
+const isSettled = (cand: CandidateState) => cand.status === 'rendered' || cand.status === 'failed'
+const isWorking = (cand: CandidateState) => cand.status === 'streaming' || cand.status === 'compiling'
+
+function candidateStage(cand: CandidateState): CandidateStage {
   const hasSource = cand.code.length > 0 || Boolean(cand.artifact)
-  const step = cand.status === 'queued'
-    ? 0
-    : cand.status === 'streaming'
-      ? hasSource ? 2 : 1
-      : cand.status === 'compiling'
-        ? 3
-        : cand.status === 'rendered'
-          ? 4
-          : hasSource ? 3 : 1
+  if (cand.status === 'failed') return 'failed'
+  if (cand.status === 'rendered') return 'ready'
+  if (cand.status === 'compiling') return cand.error ? 'repairing' : 'compiling'
+  if (cand.status === 'streaming') return hasSource ? 'coding' : 'drafting'
+  return 'queued'
+}
 
-  const label = cand.status === 'failed'
-    ? '生成失败'
-    : cand.status === 'streaming' && hasSource
-      ? '正在写组件'
-      : cand.status === 'streaming'
-        ? '正在画草图'
-        : cand.status === 'compiling'
-          ? cand.error ? '正在自动修复' : '正在编译'
-          : cand.status === 'rendered'
-            ? '候选已完成'
-            : '等待启动'
+function candidateActivity(cand: CandidateState) {
+  const stage = candidateStage(cand)
+  const hasSource = cand.code.length > 0 || Boolean(cand.artifact)
+  const step = stage === 'failed' ? (hasSource ? 3 : 1) : STAGE_STEP[stage]
+  return { stage, step, label: STAGE_TEXT[stage] }
+}
 
-  return { step, label }
+/** 候选身上已经带着 Agent 身份：优先用 artifact，其次从 `def.label` 前缀反查。 */
+function resolveAgent(cand: CandidateState): AgentIdentity {
+  if (cand.artifact?.agent) return cand.artifact.agent
+  const prefix = cand.def.label.split('·')[0].trim()
+  return AGENT_ROSTER.find((agent) => agent.name === prefix) ?? FALLBACK_AGENTS[cand.def.style]
+}
+
+/** 顶部状态条已经写了 Agent 名字与职责，底部就只留「这一版是什么」。 */
+function withoutPrefix(text: string, prefix: string) {
+  const head = `${prefix} · `
+  return text.startsWith(head) ? text.slice(head.length) : text
+}
+
+function formatElapsed(ms: number) {
+  if (!Number.isFinite(ms) || ms <= 0) return '0.0s'
+  const seconds = ms / 1000
+  if (seconds < 60) return `${seconds.toFixed(1)}s`
+  return `${Math.floor(seconds / 60)}分${String(Math.floor(seconds % 60)).padStart(2, '0')}秒`
 }
 
 function CandidateCard({
@@ -48,6 +102,8 @@ function CandidateCard({
   isTryOn,
   isSelected,
   slotSelected,
+  elapsedMs,
+  workingElsewhere,
   onTryOn,
   onConfirm,
   cssVariables,
@@ -57,13 +113,28 @@ function CandidateCard({
   isTryOn: boolean
   isSelected: boolean
   slotSelected: boolean
+  /** 由整条候选轨共享的一个计时器算出，卡片自己不开 interval。 */
+  elapsedMs: number
+  /** 此刻真正在跑的其他 Agent 数量：解释「为什么我还在排队」。 */
+  workingElsewhere: number
   onTryOn: () => void
   onConfirm: () => void
   cssVariables: Record<string, string>
 }) {
   const ready = cand.status === 'rendered'
-  const agent = cand.artifact?.agent ?? FALLBACK_AGENTS[cand.def.style]
+  const agent = resolveAgent(cand)
+  const Glyph = AGENT_GLYPHS[agent.id] ?? Bot
   const activity = candidateActivity(cand)
+  const settled = isSettled(cand)
+  const queued = activity.stage === 'queued'
+  const failed = activity.stage === 'failed'
+  const elapsed = formatElapsed(elapsedMs)
+  const variantLabel = withoutPrefix(cand.def.label, agent.name)
+  const variantBlurb = withoutPrefix(cand.def.blurb, agent.role)
+  // 顶栏这类槽位的预览框只有 ~46px 高，多行说明会被裁掉。
+  // 窄框只留徽标（失败原因在上方状态条里已经完整给过一次）。
+  const previewBoxH = previewH * 0.52
+  const roomyPreview = previewBoxH >= 72
   const [isLocking, setIsLocking] = useState(false)
   const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -84,11 +155,13 @@ function CandidateCard({
   return (
     <div
       data-cand-card
+      data-agent={agent.id}
+      data-stage={activity.stage}
       data-state={isSelected ? 'selected' : isTryOn ? 'trying' : 'idle'}
       onClick={() => ready && onTryOn()}
       className={`candidate-choice-card group relative snap-center shrink-0 rounded-2xl border bg-white overflow-hidden ${
         ready ? 'cursor-pointer' : ''
-      } ${
+      } ${failed ? 'candidate-choice-failed' : queued ? 'candidate-choice-queued' : ''} ${
         isLocking
           ? 'candidate-choice-locking border-emerald-400'
           : isSelected
@@ -99,46 +172,65 @@ function CandidateCard({
       }`}
     >
       <div className="candidate-choice-glow pointer-events-none absolute inset-0 z-20 rounded-[inherit]" />
-      <div className="candidate-agent-panel relative z-[1] px-3 pt-2.5 pb-2" data-agent={agent.id}>
+      <div className="candidate-agent-panel relative z-[1] px-3 pt-2.5 pb-2" data-agent={agent.id} data-stage={activity.stage}>
         <div className="flex items-center gap-2">
           <span className="candidate-agent-avatar flex size-7 shrink-0 items-center justify-center rounded-xl">
-            <Bot size={14} />
+            <Glyph size={14} />
           </span>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">
               <span className="truncate text-[10px] font-extrabold text-neutral-800">{agent.name}</span>
-              <span className={`candidate-agent-live-dot ${cand.status === 'rendered' || cand.status === 'failed' ? 'is-settled' : ''}`} />
+              <span className={`candidate-agent-live-dot ${settled ? 'is-settled' : ''} ${queued ? 'is-waiting' : ''}`} />
             </div>
             <div className="truncate text-[8px] font-medium text-neutral-500">{agent.role}</div>
           </div>
-          <div className={`candidate-agent-status flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-[8px] font-bold ${cand.status === 'failed' ? 'is-failed' : ''}`}>
-            {cand.status === 'failed'
-              ? <CircleAlert size={9} />
-              : cand.status !== 'rendered' && <Loader2 size={9} className="animate-spin" />}
-            {activity.label}
+          <div className="flex shrink-0 flex-col items-end gap-1">
+            <div className={`candidate-agent-status flex items-center gap-1 rounded-full px-2 py-1 text-[8px] font-bold ${failed ? 'is-failed' : ''} ${queued ? 'is-queued' : ''}`}>
+              {failed
+                ? <CircleAlert size={9} />
+                : ready
+                  ? <CircleCheck size={9} />
+                  : queued
+                    ? <Hourglass size={9} className="candidate-agent-hourglass" />
+                    : <Loader2 size={9} className="animate-spin" />}
+              {activity.label}
+            </div>
+            <span
+              className="candidate-agent-elapsed font-mono tabular-nums text-[8px] font-bold"
+              title={queued ? `已排队 ${elapsed}` : settled ? `总耗时 ${elapsed}` : `已用时 ${elapsed}`}
+            >
+              {elapsed}
+            </span>
           </div>
         </div>
-        <div className="mt-2 flex items-center gap-1" aria-label={`生成进度：${activity.label}，第 ${activity.step + 1} 步，共 ${GENERATION_STEPS.length} 步`}>
-          {GENERATION_STEPS.map((stepLabel, index) => (
-            <div key={stepLabel} className="min-w-0 flex-1">
-              <div
-                className={`candidate-agent-step h-1 rounded-full ${
-                  index < activity.step || cand.status === 'rendered'
-                    ? 'is-done'
-                    : index === activity.step
-                      ? cand.status === 'failed' ? 'is-failed' : 'is-active'
-                      : ''
-                }`}
-              />
-              <div className={`mt-1 truncate text-center text-[6px] font-bold ${index === activity.step ? 'text-neutral-600' : 'text-neutral-300'}`}>
-                {stepLabel}
+        {failed ? (
+          <div className="candidate-agent-error mt-2 flex items-start gap-1 rounded-lg px-2 py-1 text-[8px] font-semibold leading-relaxed" title={cand.error ?? '未知错误'}>
+            <CircleAlert size={9} className="mt-px shrink-0" />
+            <span className="line-clamp-2">{cand.error ?? '未知错误，请重新生成'}</span>
+          </div>
+        ) : (
+          <div className="mt-2 flex items-center gap-1" aria-label={`生成进度：${activity.label}，第 ${activity.step + 1} 步，共 ${GENERATION_STEPS.length} 步`}>
+            {GENERATION_STEPS.map((stepLabel, index) => (
+              <div key={stepLabel} className="min-w-0 flex-1">
+                <div
+                  className={`candidate-agent-step h-1 rounded-full ${
+                    index < activity.step || ready
+                      ? 'is-done'
+                      : index === activity.step
+                        ? queued ? 'is-queued' : 'is-active'
+                        : ''
+                  }`}
+                />
+                <div className={`mt-1 truncate text-center text-[6px] font-bold ${index === activity.step ? 'text-neutral-600' : 'text-neutral-300'}`}>
+                  {stepLabel}
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
       {/* 实时预览（缩放） */}
-      <div className="relative bg-neutral-50 border-b border-neutral-100 overflow-hidden" style={{ height: previewH * 0.52 }}>
+      <div className="relative bg-neutral-50 border-b border-neutral-100 overflow-hidden" style={{ height: previewBoxH }}>
         {ready ? (
           <div className={`pointer-events-none origin-top-left ${cand.anim}`} style={{ width: '192%', transform: 'scale(0.52)' }}>
             {cand.artifact ? (
@@ -151,14 +243,28 @@ function CandidateCard({
           <div className="pointer-events-none origin-top-left" style={{ width: '192%', height: previewH, transform: 'scale(0.52)' }}>
             <StreamingHtmlPreview html={cand.streamPreviewHtml} cssVariables={cssVariables} title={`${cand.def.label} · API 流式草图`} />
           </div>
-        ) : cand.status === 'failed' ? (
+        ) : failed ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center px-3 text-center">
-            <span className="text-[10px] font-bold text-rose-500">生成失败</span>
-            <span className="mt-1 text-[8px] text-rose-400 line-clamp-3">{cand.error ?? '请重新生成'}</span>
+            <span className="candidate-fail-badge inline-flex items-center gap-1 rounded-full px-2 py-1 text-[9px] font-bold">
+              <CircleAlert size={9} /> 生成失败 · {elapsed}
+            </span>
+            {roomyPreview && (
+              <span className="mt-1.5 text-[8px] text-rose-400 line-clamp-3">{cand.error ?? '请重新生成'}</span>
+            )}
           </div>
-        ) : cand.status === 'queued' ? (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <span className="text-[10px] text-neutral-400">queued · 排队中 ⏳</span>
+        ) : queued ? (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 px-3 text-center">
+            <span className="candidate-queue-badge inline-flex items-center gap-1 rounded-full px-2 py-1 text-[9px] font-bold">
+              <Hourglass size={9} className="candidate-agent-hourglass" /> 已排队 {elapsed}
+            </span>
+            <span className="candidate-queue-track" aria-hidden="true" />
+            {roomyPreview && (
+              <span className="text-[8px] leading-relaxed text-neutral-400">
+                {workingElsewhere > 0
+                  ? `另有 ${workingElsewhere} 个 Agent 正在执行，轮到我就开工`
+                  : '调度器已排上号，马上开始'}
+              </span>
+            )}
           </div>
         ) : (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-1">
@@ -189,8 +295,8 @@ function CandidateCard({
       {/* 信息 + 操作 */}
       <div className="px-3 py-2 flex items-center gap-2">
         <div className="min-w-0 flex-1">
-          <div className="text-[11px] font-bold text-neutral-800 truncate">{cand.def.label}</div>
-          <div className="text-[9px] text-neutral-400 truncate">{cand.def.blurb}</div>
+          <div className="text-[11px] font-bold text-neutral-800 truncate">{variantLabel}</div>
+          <div className="text-[9px] text-neutral-400 truncate">{variantBlurb}</div>
         </div>
         <button
           disabled={!ready || isSelected || isLocking}
@@ -220,6 +326,10 @@ function CandidateCard({
   )
 }
 
+/** 整条候选轨共用一个计时器：now 每 500ms 前进一次，每张卡记一次开工/收工时刻。 */
+type RailClock = { now: number; startedAt: Record<string, number>; settledAt: Record<string, number> }
+const EMPTY_CLOCK: RailClock = { now: 0, startedAt: {}, settledAt: {} }
+
 export default function CandidateRail() {
   const { slots, activeSlotId, setActiveSlot, tryOn, confirmCandidate, phase, directionId, harnessMode } = useStore()
   const cssVariables = getDirection(directionId ?? 'apple').vars
@@ -227,6 +337,45 @@ export default function CandidateRail() {
   const lastIdx = useRef(-1)
 
   const activeSlot = slots.find((s) => s.def.id === activeSlotId) ?? slots.find((s) => s.status !== 'selected') ?? null
+
+  // 计时口径覆盖所有槽位：切换槽位时后台候选的耗时不会被清零重来。
+  const allCandidates = slots.flatMap((s) => s.candidates)
+  const rosterKey = allCandidates.map((c) => c.def.id).join('|')
+  const settledKey = allCandidates.filter(isSettled).map((c) => c.def.id).join('|')
+  const workingCount = allCandidates.filter(isWorking).length
+  const [clock, setClock] = useState<RailClock>(EMPTY_CLOCK)
+
+  useEffect(() => {
+    const roster = rosterKey ? rosterKey.split('|') : []
+    if (roster.length === 0) return
+    const settled = new Set(settledKey ? settledKey.split('|') : [])
+    const tick = () => setClock((prev) => {
+      const now = Date.now()
+      const startedAt: Record<string, number> = {}
+      const settledAt: Record<string, number> = {}
+      for (const id of roster) {
+        // 重新生成会把已完成的候选打回 queued：此时重新计时，而不是接着旧的读数走。
+        const restarted = !settled.has(id) && prev.settledAt[id] !== undefined
+        startedAt[id] = restarted ? now : prev.startedAt[id] ?? now
+        if (settled.has(id)) settledAt[id] = prev.settledAt[id] ?? now
+      }
+      return { now, startedAt, settledAt }
+    })
+    // 先立刻对一次表（补齐新卡片的起点、封存刚结束卡片的终点），
+    // 只有还存在未结束的候选时才继续每 500ms 走针。
+    const seed = setTimeout(tick, 0)
+    const timer = settled.size < roster.length ? setInterval(tick, 500) : null
+    return () => {
+      clearTimeout(seed)
+      if (timer) clearInterval(timer)
+    }
+  }, [rosterKey, settledKey])
+
+  const elapsedFor = (candidateId: string) => {
+    const startedAt = clock.startedAt[candidateId]
+    if (!startedAt) return 0
+    return Math.max(0, (clock.settledAt[candidateId] ?? clock.now) - startedAt)
+  }
 
   /** 滚动 → 找距中心线最近的候选 → 试穿 + 按索引变调 tick */
   const handleScroll = useCallback(() => {
@@ -321,6 +470,8 @@ export default function CandidateRail() {
               isTryOn={activeSlot.tryOnId === c.def.id}
               isSelected={activeSlot.selectedId === c.def.id}
               slotSelected={activeSlot.status === 'selected'}
+              elapsedMs={elapsedFor(c.def.id)}
+              workingElsewhere={workingCount}
               onTryOn={() => {
                 tryOn(activeSlot.def.id, c.def.id)
                 playClick()

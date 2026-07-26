@@ -26,6 +26,20 @@ import type {
 // the user sees anything useful.
 const VARIANTS: CandidateVariant[] = ['expressive', 'conservative', 'experimental']
 
+// Each candidate job opens two model streams at once (the cheap draft plus the
+// full builder), so this caps real request pressure at six concurrent streams —
+// enough for one complete specialist team to work in parallel, which is the
+// whole point of the product.
+const MAX_CONCURRENT_AGENT_JOBS = 3
+
+// A generation run and an individual candidate attempt both outlive the moment
+// they stop being current: providers finish buffered responses after Stop, and
+// LangGraph resolves `graph.invoke` while its agent nodes are still settling. A
+// run that has been replaced must not paint, mutate or emit anything.
+function supersededError() {
+  return new DOMException('这批生成已被新的请求取代', 'AbortError')
+}
+
 export class HarnessSession {
   readonly sessionId: string
   readonly requirement: string
@@ -35,6 +49,12 @@ export class HarnessSession {
   #client: BrowserKimiClient
   #abortController = new AbortController()
   #generationController: AbortController | null = null
+  // Identity of the generation run that currently owns the rail. Every run mints
+  // a fresh id; work that captured an older one is superseded and must stay
+  // silent. This is deliberately independent of the abort signal: a run can be
+  // replaced while its fire-and-forget draft streams are still open, and those
+  // streams see no abort at all.
+  #runId: string | null = null
   #generationRunning = false
   #phase: HarnessPhase = 'idle'
   #plan: PagePlan | null = null
@@ -149,6 +169,7 @@ export class HarnessSession {
     this.#phase = 'generating'
     this.#generationController = new AbortController()
     const generationSignal = this.#generationController.signal
+    const runId = this.#runId = crypto.randomUUID()
     const targets = componentIds?.length
       ? this.#plan.components.filter((component) => componentIds.includes(component.id))
       : this.#plan.components
@@ -167,49 +188,58 @@ export class HarnessSession {
     const preparedJobs = jobs.map(({ component, variant }) => {
       const candidateId = `${component.id}-${variant}-${crypto.randomUUID().slice(0, 8)}`
       const taskId = `build:${candidateId}`
+      // `candidateId` names the *slot on the rail*; `attemptId` names this
+      // particular build of it. A retry, repair or revision replaces the
+      // artifact under the same candidateId, so only the attempt id can tell
+      // an in-flight continuation that its artifact is gone.
+      const attemptId = crypto.randomUUID()
       this.events.publish({
         type: 'component.queued', componentId: component.id, candidateId, variant,
         agent: builderAgentFor(variant),
       }, 'generating')
-      return { component, variant, candidateId, taskId }
+      return { component, variant, candidateId, taskId, attemptId }
     })
     const invokeAgentGraph = async (graphBatch: typeof preparedJobs) => {
       // Keep LangGraph out of the initial UI bundle; load the browser runtime
       // only after the user has selected a visual direction.
       const { runComponentAgentGraph } = await import('./generation-graph.ts')
-      const graphJobs = graphBatch.map(({ component, variant: jobVariant, candidateId, taskId }) => {
+      const graphJobs = graphBatch.map(({ component, variant: jobVariant, candidateId, taskId, attemptId }) => {
         return {
           id: taskId,
           variant: jobVariant,
-          run: () => this.#buildCandidate(component.id, candidateId, jobVariant, generationSignal),
+          run: () => this.#buildCandidate({
+            componentId: component.id, candidateId, variant: jobVariant, signal: generationSignal, runId, attemptId,
+          }),
         }
       })
       return runComponentAgentGraph(graphJobs, {
         signal: generationSignal,
-        concurrency: this.#options.concurrency,
+        // Each job opens two model streams at once (the cheap draft plus the
+        // full builder), so the graph's job limit is half the real request
+        // pressure. Allow one complete specialist team to run concurrently —
+        // three jobs, six streams — since seeing all the agents work at once
+        // is the product's whole premise. Anything beyond that queues.
+        concurrency: Math.max(1, Math.min(this.#options.concurrency, MAX_CONCURRENT_AGENT_JOBS)),
         retries: this.#options.retries,
         onRetry: (taskId, attempt, error) => {
+          if (this.#runId !== runId) return
           this.events.publish({ type: 'task.retrying', taskId, attempt, error: error.message }, 'generating')
         },
         onFailed: (taskId, error) => {
+          if (this.#runId !== runId) return
           this.events.publish({ type: 'task.failed', taskId, error: error.message }, 'generating')
         },
       })
     }
 
     try {
-      // A single atomic slot benefits from two immediately comparable opinions.
-      // Larger pages stay at one active agent per slot to keep request pressure
-      // bounded; all remaining agents are already visible as queued cards.
-      const leadVariantCount = targets.length === 1 ? Math.min(2, this.#options.candidateCount) : 1
-      const leadVariants = new Set(VARIANTS.slice(0, leadVariantCount))
-      const firstWave = preparedJobs.filter((job) => leadVariants.has(job.variant))
-      const laterWave = preparedJobs.filter((job) => !leadVariants.has(job.variant))
-      const results = [
-        ...(firstWave.length ? await invokeAgentGraph(firstWave) : []),
-        ...(generationSignal.aborted || !laterWave.length ? [] : await invokeAgentGraph(laterWave)),
-      ]
-      if (generationSignal.aborted) return []
+      // Every specialist runs concurrently. Serializing them into waves meant a
+      // second-wave card sat visibly "queued" for the entire duration of the
+      // first build (~44s measured), which reads as a stalled product rather
+      // than a design team at work. Request pressure is bounded by the graph's
+      // concurrency limit, which the caller sets in terms of real HTTP streams.
+      const results = await invokeAgentGraph(preparedJobs)
+      if (generationSignal.aborted || this.#runId !== runId) return []
       this.#phase = 'selecting'
       const ready = results.filter((candidate) => this.#candidates.get(candidate.id)?.runtimeStatus === 'rendered').length
       this.events.publish({ type: 'generation.completed', ready, expected: preparedJobs.length }, 'ready')
@@ -218,31 +248,58 @@ export class HarnessSession {
     } catch (reason) {
       // LangGraph propagates AbortError from graph.invoke even when individual
       // agent nodes correctly suppress their work. User-initiated Stop is a
-      // normal terminal path, not a failed generation request.
-      if (generationSignal.aborted) return []
+      // normal terminal path, not a failed generation request — and so is being
+      // replaced by a newer run.
+      if (generationSignal.aborted || this.#runId !== runId) return []
       throw reason
     } finally {
       this.#generationRunning = false
+      // Only the run that still owns the session may clear its identity. A
+      // newer run has already installed its own; wiping it here would let this
+      // stale run's stragglers pass every `#runId` check that follows.
       if (this.#generationController?.signal === generationSignal) this.#generationController = null
+      if (this.#runId === runId) this.#runId = null
     }
   }
 
-  async #buildCandidate(componentId: string, candidateId: string, variant: CandidateVariant, signal: AbortSignal) {
+  async #buildCandidate(job: {
+    componentId: string
+    candidateId: string
+    variant: CandidateVariant
+    signal: AbortSignal
+    runId: string
+    attemptId: string
+  }) {
+    const { componentId, candidateId, variant, signal, runId, attemptId } = job
     if (!this.#plan || !this.#direction) throw new Error('Harness context is incomplete')
     const component = this.#plan.components.find((item) => item.id === componentId)
     if (!component) throw new Error(`不存在组件合同：${componentId}`)
+    if (this.#runId !== runId) throw supersededError()
     this.events.publish({ type: 'component.started', componentId, candidateId }, 'generating')
     let receivedChars = 0
     let streamedResponse = ''
-    let publishedPreviewLength = 0
     let sourceReady = false
-    const publishStreamingPreview = (response: string) => {
+    // The cheap draft and the full builder stream concurrently and both produce
+    // a `previewHtml`. They used to share one published-length counter, so they
+    // suppressed each other and alternately pushed two *different* documents
+    // into the same preview — the sketch visibly flip-flopped between them.
+    // Track them separately, and let the builder win permanently once it paints:
+    // it is the document that will actually become the component.
+    const publishedLength = { draft: 0, builder: 0 }
+    let builderOwnsPreview = false
+    const publishStreamingPreview = (response: string, source: 'draft' | 'builder') => {
       if (sourceReady || signal.aborted) return
+      // The draft stream is fire-and-forget and never observes an abort, so a
+      // run that has been replaced would otherwise keep painting sketches into
+      // a rail that now belongs to a different generation.
+      if (this.#runId !== runId) return
+      if (source === 'draft' && builderOwnsPreview) return
       const preview = extractStreamingJsonString(response, 'previewHtml')
       const visibleText = preview.value.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
       if (visibleText.length < 2 || preview.value.length < 48) return
-      if (!preview.complete && preview.value.length - publishedPreviewLength < 96) return
-      publishedPreviewLength = preview.value.length
+      if (!preview.complete && preview.value.length - publishedLength[source] < 96) return
+      publishedLength[source] = preview.value.length
+      if (source === 'builder') builderOwnsPreview = true
       this.events.publish({
         type: 'preview.updated', componentId, candidateId, html: preview.value, complete: preview.complete,
       }, 'generating')
@@ -259,7 +316,7 @@ export class HarnessSession {
       maxTokens: 900,
       onDelta: (delta) => {
         draftResponse += delta
-        publishStreamingPreview(draftResponse)
+        publishStreamingPreview(draftResponse, 'draft')
       },
     }).catch(() => null)
     const raw = await this.#client.completeJson(builderMessages({
@@ -274,16 +331,29 @@ export class HarnessSession {
       maxTokens: 6000,
       onDelta: (delta) => {
         streamedResponse += delta
-        publishStreamingPreview(streamedResponse)
+        publishStreamingPreview(streamedResponse, 'builder')
         receivedChars += delta.length
         if (receivedChars < 320) return
+        if (this.#runId !== runId) return
         this.events.publish({ type: 'component.activity', componentId, candidateId, receivedChars }, 'generating')
         receivedChars = 0
       },
     })
     if (signal.aborted) throw signal.reason ?? new DOMException('生成已停止', 'AbortError')
+    // A provider that ignores AbortSignal finishes its buffered response long
+    // after Stop or a replacing run. Re-check before latching `sourceReady`,
+    // which is itself a mutation of this closure's publishing contract.
+    if (this.#runId !== runId) throw supersededError()
     sourceReady = true
-    const candidate = parseCandidate(raw, { id: candidateId, componentId, variant, agent: builderAgentFor(variant) })
+    const candidate = parseCandidate(raw, {
+      id: candidateId, componentId, variant, agent: builderAgentFor(variant), attemptId,
+    })
+    // Last checkpoint before the artifact becomes session state. Parsing is
+    // synchronous, but `parseCandidate` runs after two awaited streams, so the
+    // run can have been replaced between the check above and this line only via
+    // a synchronous caller — checking again is free and keeps the invariant
+    // local to the mutation it protects.
+    if (this.#runId !== runId) throw supersededError()
     this.#candidates.set(candidateId, candidate)
     for (const file of candidate.files) {
       this.events.publish({ type: 'file.created', candidateId, path: file.path }, 'generating')
@@ -297,7 +367,18 @@ export class HarnessSession {
     return candidate
   }
 
-  async reportCompile(candidateId: string, result: CompileResult) {
+  /**
+   * Apply a compile verdict to a candidate.
+   *
+   * `expectedAttemptId` is the `attemptId` of the artifact the compile was run
+   * against. Compilation is asynchronous and the artifact underneath a
+   * candidate slot can be replaced while it runs (repair, revision, rebuild),
+   * so a caller that holds an artifact should pass its id: a verdict about a
+   * dead build must never be stamped onto the live one. Omitting it keeps the
+   * unconditional legacy behaviour.
+   */
+  async reportCompile(candidateId: string, result: CompileResult, expectedAttemptId?: string) {
+    if (expectedAttemptId !== undefined && !this.#isCurrentAttempt(candidateId, expectedAttemptId)) return
     const candidate = this.#requireCandidate(candidateId)
     if (result.ok) {
       candidate.runtimeStatus = 'rendered'
@@ -318,11 +399,15 @@ export class HarnessSession {
     const candidate = this.#requireCandidate(candidateId)
     const runtime = this.#options.runtime
     if (!runtime) return
+    const attemptId = candidate.attemptId
     candidate.runtimeStatus = 'compiling'
     this.events.publish({ type: 'compile.started', candidateId }, 'compiling')
     const result = await runtime.compile(candidate, signal)
     if (signal.aborted) return
-    await this.reportCompile(candidateId, result)
+    // The artifact that was handed to the runtime may have been replaced while
+    // it compiled; its verdict describes source that no longer exists.
+    if (!this.#isCurrentAttempt(candidateId, attemptId)) return
+    await this.reportCompile(candidateId, result, attemptId)
   }
 
   async #repair(candidate: CandidateArtifact, errors: string[], signal: AbortSignal) {
@@ -331,6 +416,10 @@ export class HarnessSession {
       this.events.publish({ type: 'repair.exhausted', candidateId: candidate.id, errors }, 'compiling')
       return
     }
+    // Identity of the artifact being repaired. The fixer request below is a
+    // full model round trip, and a revision or rebuild can land in that window.
+    const attemptId = candidate.attemptId
+    if (!this.#isCurrentAttempt(candidate.id, attemptId)) return
     candidate.fixAttempts += 1
     this.events.publish({ type: 'repair.started', candidateId: candidate.id, attempt: candidate.fixAttempts }, 'compiling')
     const component = this.#plan.components.find((item) => item.id === candidate.componentId)
@@ -340,12 +429,21 @@ export class HarnessSession {
       model: this.#options.kimi.codeModel,
       maxTokens: 6000,
     })
+    if (signal.aborted) return
+    if (!this.#isCurrentAttempt(candidate.id, attemptId)) return
     const fixed = parseCandidate(raw, {
       id: candidate.id, componentId: candidate.componentId, variant: candidate.variant,
       agent: candidate.agent ?? builderAgentFor(candidate.variant),
+      // A repair produces a new artifact, so it gets a new attempt identity:
+      // anything still awaiting a verdict on the broken source is now stale.
+      attemptId: crypto.randomUUID(),
     })
     this.#assertSameFileBoundary(candidate, fixed)
     fixed.fixAttempts = candidate.fixAttempts
+    // Re-checked immediately before the mutation itself: `parseCandidate` and
+    // the boundary assertion are synchronous, but keeping the guard adjacent to
+    // the write is what makes the invariant local and hard to regress.
+    if (!this.#isCurrentAttempt(candidate.id, attemptId)) return
     this.#candidates.set(candidate.id, fixed)
     this.events.publish({ type: 'repair.completed', candidate: fixed }, 'ready')
     await this.#persist()
@@ -412,6 +510,10 @@ export class HarnessSession {
       const revised = parseCandidate(raw, {
         id: current.id, componentId: current.componentId, variant: current.variant,
         agent: current.agent ?? builderAgentFor(current.variant),
+        // A revision replaces the artifact, so it takes a new attempt identity.
+        // Without one the revised candidate would carry no identity at all and
+        // every later guard against it would degrade to "unknown".
+        attemptId: crypto.randomUUID(),
       })
       this.#assertSameFileBoundary(current, revised)
       revised.fixAttempts = current.fixAttempts
@@ -492,6 +594,21 @@ export class HarnessSession {
     const candidate = this.#candidates.get(candidateId)
     if (!candidate) throw new Error(`不存在候选：${candidateId}`)
     return candidate
+  }
+
+  /**
+   * Is `attemptId` still the artifact living under `candidateId`?
+   *
+   * A missing candidate is never current — the slot was cleared out from under
+   * the caller. A restored v1 snapshot carries no `attemptId`, so work started
+   * against it compares `undefined` to `undefined` and is treated as current;
+   * that is the pre-existing behaviour and the only case where identity is
+   * genuinely unknown rather than stale.
+   */
+  #isCurrentAttempt(candidateId: string, attemptId: string | undefined) {
+    const candidate = this.#candidates.get(candidateId)
+    if (!candidate) return false
+    return candidate.attemptId === attemptId
   }
 
   #assertSameFileBoundary(previous: CandidateArtifact, next: CandidateArtifact) {

@@ -168,6 +168,21 @@
   box-shadow: inset 0 0 0 2px rgb(255 255 255 / 0.75);
   transition: opacity 220ms ease;
 }
+/* 排队 ≠ 卡死：整张卡片压低对比度、加一条缓慢呼吸的描边，读作「排到我就开工」。 */
+.candidate-choice-queued {
+  border-style: dashed;
+  animation: candidateQueuedBreath 2.6s ease-in-out infinite;
+}
+.candidate-choice-queued .candidate-choice-glow { opacity: 0; }
+/* 失败 ≠ 慢：直接换成玫红警示描边，一眼和「还在跑」区分开。 */
+.candidate-choice-failed {
+  border-color: rgb(244 63 94 / 0.55) !important;
+  box-shadow: 0 6px 20px rgb(244 63 94 / 0.14), 0 0 0 3px rgb(244 63 94 / 0.1);
+}
+.candidate-choice-failed.candidate-choice-idle {
+  opacity: 0.92;
+  filter: none;
+}
 .candidate-choice-trying .candidate-choice-glow,
 .candidate-choice-selected .candidate-choice-glow { opacity: 1; }
 .candidate-choice-statebar {
@@ -205,10 +220,28 @@
 .candidate-agent-panel[data-agent='motion'] { --agent-color: 236 72 153; }
 .candidate-agent-panel[data-agent='product'] { --agent-color: 37 99 235; }
 .candidate-agent-panel[data-agent='explorer'] { --agent-color: 139 92 246; }
+/* 排队时把 Agent 主色收敛成灰，只有真正开工的那张卡才有彩色。 */
+.candidate-agent-panel[data-stage='queued'] {
+  --agent-color: 148 163 184;
+  background: repeating-linear-gradient(
+    -45deg,
+    rgb(148 163 184 / 0.09) 0 6px,
+    rgb(255 255 255 / 0.86) 6px 12px
+  );
+}
+.candidate-agent-panel[data-stage='failed'] { --agent-color: 244 63 94; }
 .candidate-agent-avatar {
   color: rgb(var(--agent-color));
   background: rgb(var(--agent-color) / 0.11);
   box-shadow: inset 0 0 0 1px rgb(var(--agent-color) / 0.16);
+}
+/* 每个 Agent 一个字形（Motion 闪电 / Product 版面 / Explorer 罗盘）：
+   生成中即使读不完文字，图标 + 主色也能区分是谁在做。 */
+.candidate-agent-panel[data-stage='drafting'] .candidate-agent-avatar,
+.candidate-agent-panel[data-stage='coding'] .candidate-agent-avatar,
+.candidate-agent-panel[data-stage='compiling'] .candidate-agent-avatar,
+.candidate-agent-panel[data-stage='repairing'] .candidate-agent-avatar {
+  animation: agentGlyphPulse 1.8s ease-in-out infinite;
 }
 .candidate-agent-status {
   color: rgb(var(--agent-color));
@@ -217,6 +250,51 @@
 .candidate-agent-status.is-failed {
   color: rgb(225 29 72);
   background: rgb(255 228 230 / 0.9);
+}
+.candidate-agent-status.is-queued {
+  color: rgb(100 116 139);
+  background: rgb(241 245 249 / 0.95);
+  box-shadow: inset 0 0 0 1px rgb(148 163 184 / 0.35);
+}
+/* 秒表读数：跑动中用 Agent 主色，收工/排队时退成灰。 */
+.candidate-agent-elapsed { color: rgb(var(--agent-color) / 0.85); }
+.candidate-agent-panel[data-stage='queued'] .candidate-agent-elapsed,
+.candidate-agent-panel[data-stage='ready'] .candidate-agent-elapsed { color: rgb(148 163 184); }
+.candidate-agent-panel[data-stage='failed'] .candidate-agent-elapsed { color: rgb(225 29 72 / 0.8); }
+.candidate-agent-hourglass { animation: agentHourglass 2.4s ease-in-out infinite; }
+.candidate-agent-error {
+  color: rgb(190 18 60);
+  background: rgb(255 241 242 / 0.95);
+  box-shadow: inset 0 0 0 1px rgb(244 63 94 / 0.25);
+}
+.candidate-fail-badge {
+  color: rgb(190 18 60);
+  background: rgb(255 228 230 / 0.9);
+  box-shadow: inset 0 0 0 1px rgb(244 63 94 / 0.3);
+}
+.candidate-queue-badge {
+  color: rgb(71 85 105);
+  background: rgb(241 245 249 / 0.95);
+  box-shadow: inset 0 0 0 1px rgb(148 163 184 / 0.35);
+}
+/* 一条来回滑动的候补轨：排队卡也在动，但动得明显比工作卡「慢而空」。 */
+.candidate-queue-track {
+  position: relative;
+  display: block;
+  width: 68px;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgb(148 163 184 / 0.22);
+}
+.candidate-queue-track::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 34%;
+  border-radius: inherit;
+  background: rgb(100 116 139 / 0.55);
+  animation: candidateQueueShuttle 2.6s ease-in-out infinite alternate;
 }
 .candidate-agent-live-dot {
   width: 5px;
@@ -228,6 +306,12 @@
   animation: agentWorking 1.6s ease-out infinite;
 }
 .candidate-agent-live-dot.is-settled { animation: none; }
+/* 排队点：不做扩散脉冲（那是「在跑」的语义），只做慢速明暗呼吸。 */
+.candidate-agent-live-dot.is-waiting {
+  background: rgb(148 163 184);
+  box-shadow: none;
+  animation: agentQueuedDot 2.6s ease-in-out infinite;
+}
 .candidate-agent-step {
   position: relative;
   overflow: hidden;
@@ -247,6 +331,14 @@
   border-radius: inherit;
   background: rgb(var(--agent-color));
   animation: agentStepSweep 1.25s ease-in-out infinite alternate;
+}
+/* 排队的当前步不做 sweep：只用虚线底纹表示「已占位、未开始」。 */
+.candidate-agent-step.is-queued {
+  background: repeating-linear-gradient(
+    90deg,
+    rgb(148 163 184 / 0.75) 0 3px,
+    transparent 3px 6px
+  );
 }
 .candidate-agent-step.is-failed { background: rgb(244 63 94 / 0.75); }
 
@@ -277,15 +369,42 @@
   from { transform: translateX(-12%); }
   to { transform: translateX(104%); }
 }
+@keyframes agentGlyphPulse {
+  0%, 100% { transform: scale(1); box-shadow: inset 0 0 0 1px rgb(var(--agent-color) / 0.16); }
+  50% { transform: scale(1.08); box-shadow: inset 0 0 0 1.5px rgb(var(--agent-color) / 0.45); }
+}
+@keyframes agentQueuedDot {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.85; }
+}
+@keyframes agentHourglass {
+  0%, 62% { transform: rotate(0deg); }
+  78%, 100% { transform: rotate(180deg); }
+}
+@keyframes candidateQueuedBreath {
+  0%, 100% { border-color: rgb(148 163 184 / 0.4); }
+  50% { border-color: rgb(148 163 184 / 0.85); }
+}
+@keyframes candidateQueueShuttle {
+  from { transform: translateX(0); }
+  to { transform: translateX(194%); }
+}
 
 @media (prefers-reduced-motion: reduce) {
   .candidate-choice-card,
+  .candidate-choice-queued,
   .candidate-choice-locking,
   .candidate-choice-confirm-flash,
   .candidate-choice-confirm-pill,
   .candidate-choice-statebar,
   .candidate-agent-live-dot,
+  .candidate-agent-hourglass,
+  .candidate-agent-avatar,
+  .candidate-queue-track::after,
   .candidate-agent-step::after { animation: none; transition-duration: 1ms; }
+  /* 去掉动效后，排队态仍要看得出来：留一条静态虚线描边和静止的候补轨。 */
+  .candidate-choice-queued { border-color: rgb(148 163 184 / 0.75); }
+  .candidate-queue-track::after { width: 34%; }
 }
 
 .wallpaper {

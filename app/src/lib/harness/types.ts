@@ -80,6 +80,14 @@ export type CandidateArtifact = {
   id: string
   componentId: string
   variant: CandidateVariant
+  /**
+   * Identity of the build attempt that produced this artifact. A fresh id is
+   * minted every time `#candidates` is about to be replaced (build, repair,
+   * revision) so async work that started against an earlier artifact can detect
+   * that it has been superseded. Optional: restored v1 snapshots have none, and
+   * an absent id means "attempt identity unknown", never "stale".
+   */
+  attemptId?: string
   /** Present on newly generated candidates; optional for restored v1 snapshots. */
   agent?: BuilderAgentPersona
   files: GeneratedFile[]
