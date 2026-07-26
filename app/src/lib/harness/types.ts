@@ -109,6 +109,7 @@ export type GenerationEvent =
   | { type: 'component.queued'; componentId: string; candidateId: string; variant: CandidateVariant }
   | { type: 'component.started'; componentId: string; candidateId: string }
   | { type: 'component.activity'; componentId: string; candidateId: string; receivedChars: number }
+  | { type: 'preview.updated'; componentId: string; candidateId: string; html: string; complete: boolean }
   | { type: 'file.created'; candidateId: string; path: string }
   | { type: 'code.delta'; candidateId: string; path: string; delta: string }
   | { type: 'source.ready'; candidate: CandidateArtifact }

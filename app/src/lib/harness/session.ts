@@ -1,6 +1,7 @@
 import { HarnessEventStream } from './events.ts'
-import { BrowserKimiClient } from './kimi.ts'
-import { builderMessages, fixerMessages, plannerMessages, reviewerMessages, revisionMessages } from './prompts.ts'
+import { BrowserKimiClient, extractStreamingJsonString } from './kimi.ts'
+import { createAtomicPlan, normalizePlanCohesion } from './plan-cohesion.ts'
+import { builderMessages, draftPreviewMessages, fixerMessages, plannerMessages, reviewerMessages, revisionMessages } from './prompts.ts'
 import { parseCandidate, parsePlan, parseReview } from './schemas.ts'
 import { TaskScheduler } from './scheduler.ts'
 import { harnessStorage } from './storage.ts'
@@ -86,6 +87,14 @@ export class HarnessSession {
     this.events.publish({ type: 'plan.started' }, 'planning')
     await this.#persist()
     try {
+      const atomicPlan = createAtomicPlan(this.requirement)
+      if (atomicPlan) {
+        this.#plan = atomicPlan
+        this.#phase = 'awaiting_direction'
+        this.events.publish({ type: 'plan.completed', plan: this.#plan }, 'ready')
+        await this.#persist()
+        return this.#plan
+      }
       let receivedChars = 0
       const raw = await this.#client.completeJson(plannerMessages(this.requirement), {
         signal: this.#abortController.signal,
@@ -97,7 +106,7 @@ export class HarnessSession {
           receivedChars = 0
         },
       })
-      this.#plan = parsePlan(raw)
+      this.#plan = normalizePlanCohesion(parsePlan(raw), this.requirement)
       this.#phase = 'awaiting_direction'
       this.events.publish({ type: 'plan.completed', plan: this.#plan }, 'ready')
       await this.#persist()
@@ -191,6 +200,34 @@ export class HarnessSession {
     if (!component) throw new Error(`不存在组件合同：${componentId}`)
     this.events.publish({ type: 'component.started', componentId, candidateId }, 'generating')
     let receivedChars = 0
+    let streamedResponse = ''
+    let publishedPreviewLength = 0
+    let sourceReady = false
+    const publishStreamingPreview = (response: string) => {
+      if (sourceReady) return
+      const preview = extractStreamingJsonString(response, 'previewHtml')
+      const visibleText = preview.value.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
+      if (visibleText.length < 2 || preview.value.length < 48) return
+      if (!preview.complete && preview.value.length - publishedPreviewLength < 96) return
+      publishedPreviewLength = preview.value.length
+      this.events.publish({
+        type: 'preview.updated', componentId, candidateId, html: preview.value, complete: preview.complete,
+      }, 'generating')
+    }
+    let draftResponse = ''
+    void this.#client.completeJson(draftPreviewMessages({
+      requirement: this.requirement,
+      direction: this.#direction,
+      component,
+    }), {
+      signal,
+      model: this.#options.kimi.model,
+      maxTokens: 900,
+      onDelta: (delta) => {
+        draftResponse += delta
+        publishStreamingPreview(draftResponse)
+      },
+    }).catch(() => null)
     const raw = await this.#client.completeJson(builderMessages({
       requirement: this.requirement,
       plan: this.#plan,
@@ -202,12 +239,15 @@ export class HarnessSession {
       model: this.#options.kimi.codeModel,
       maxTokens: 6000,
       onDelta: (delta) => {
+        streamedResponse += delta
+        publishStreamingPreview(streamedResponse)
         receivedChars += delta.length
         if (receivedChars < 320) return
         this.events.publish({ type: 'component.activity', componentId, candidateId, receivedChars }, 'generating')
         receivedChars = 0
       },
     })
+    sourceReady = true
     const candidate = parseCandidate(raw, { id: candidateId, componentId, variant })
     this.#candidates.set(candidateId, candidate)
     for (const file of candidate.files) {

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { HarnessEventStream } from '../src/lib/harness/events.ts'
-import { BrowserKimiClient, parseJson } from '../src/lib/harness/kimi.ts'
+import { BrowserKimiClient, extractStreamingJsonString, parseJson } from '../src/lib/harness/kimi.ts'
+import { createAtomicPlan, normalizePlanCohesion } from '../src/lib/harness/plan-cohesion.ts'
 import { parseCandidate, parsePlan } from '../src/lib/harness/schemas.ts'
 import { TaskScheduler } from '../src/lib/harness/scheduler.ts'
 import { HarnessSession } from '../src/lib/harness/session.ts'
@@ -80,6 +81,23 @@ test('kimi client preserves the browser fetch receiver', async () => {
   assert.deepEqual(result, { ok: true })
 })
 
+test('streaming JSON strings expose a usable partial HTML draft', () => {
+  const partial = extractStreamingJsonString(
+    '{"previewHtml":"<div class=\\"card\\">你好\\n世界\\u0021',
+    'previewHtml',
+  )
+  assert.equal(partial.found, true)
+  assert.equal(partial.complete, false)
+  assert.equal(partial.value, '<div class="card">你好\n世界!')
+
+  const complete = extractStreamingJsonString(
+    '{"previewHtml":"<main>ready<\\/main>","files":[]}',
+    'previewHtml',
+  )
+  assert.deepEqual(complete, { found: true, complete: true, value: '<main>ready</main>' })
+  assert.deepEqual(extractStreamingJsonString('{"files":[]}', 'previewHtml'), { found: false, complete: false, value: '' })
+})
+
 test('schemas reject unsafe files and unapproved dependencies', () => {
   const basePlan = {
     project: { name: 'Test', description: '' },
@@ -109,6 +127,89 @@ test('schemas reject unsafe files and unapproved dependencies', () => {
   }, { id: 'candidate', componentId: 'one', variant: 'conservative' }), /不安全/)
 })
 
+test('atomic widget planning keeps one shared state boundary', () => {
+  const plan = createAtomicPlan('精致苹果风计数器，包含数字、减一、重置、加一')
+  assert.ok(plan)
+  assert.equal(plan.components.length, 1)
+  assert.equal(plan.components[0].id, 'counter')
+  assert.equal(plan.components[0].role, '完整计数器')
+  assert.deepEqual(plan.pages[0].slots, ['counter'])
+  assert.ok(plan.components[0].dependencies.includes('motion'))
+
+  assert.equal(createAtomicPlan('做一个产品落地页，包含 hero、功能和价格区块'), null)
+  assert.equal(createAtomicPlan('做一个数据分析 dashboard，包含导航、图表和活动列表'), null)
+})
+
+test('remote plans merge split counter parts without losing their contracts', () => {
+  const input = {
+    project: { name: 'Counter', description: 'Split by remote planner' },
+    pages: [{ id: 'home', name: 'Home', route: '/', slots: ['display', 'controls'] }],
+    visualDirections: [],
+    components: [
+      {
+        id: 'display', role: '计数显示', slot: 'page-main', width: 'fixed',
+        inputs: [{ name: 'value', type: 'number', required: true }],
+        outputs: [], dependencies: ['react'], designTokens: ['text', 'surface'],
+      },
+      {
+        id: 'controls', role: '计数控制', slot: 'page-main', width: 'fluid',
+        inputs: [{ name: 'value', type: 'number', required: true }],
+        outputs: [{ name: 'change', payload: 'number' }],
+        dependencies: ['react', 'motion'], designTokens: ['surface', 'motion'],
+      },
+    ],
+  }
+
+  const normalized = normalizePlanCohesion(input, '苹果风计数器，包含减一、重置、加一')
+  assert.equal(normalized.components.length, 1)
+  assert.equal(normalized.components[0].id, 'counter')
+  assert.equal(normalized.components[0].width, 'fluid')
+  assert.deepEqual(normalized.components[0].inputs.map(({ name }) => name), ['value'])
+  assert.deepEqual(normalized.components[0].outputs.map(({ name }) => name), ['change'])
+  assert.deepEqual(normalized.components[0].dependencies, ['react', 'motion'])
+  assert.deepEqual(normalized.components[0].designTokens, ['text', 'surface', 'motion'])
+  assert.deepEqual(normalized.pages[0].slots, ['counter'])
+  assert.deepEqual(input.pages[0].slots, ['display', 'controls'])
+})
+
+test('cohesion normalization does not merge page-level sections', () => {
+  const dashboard = {
+    project: { name: 'Dashboard', description: '' },
+    pages: [{ id: 'home', name: 'Home', route: '/', slots: ['nav', 'chart', 'activity'] }],
+    visualDirections: [],
+    components: ['nav', 'chart', 'activity'].map((id) => ({
+      id, role: id, slot: id, width: 'fluid', inputs: [], outputs: [], dependencies: ['react'], designTokens: [],
+    })),
+  }
+  const normalized = normalizePlanCohesion(dashboard, '做一个数据分析 dashboard，包含导航、图表和活动列表')
+  assert.equal(normalized, dashboard)
+  assert.equal(normalized.components.length, 3)
+  assert.deepEqual(normalized.pages[0].slots, ['nav', 'chart', 'activity'])
+})
+
+test('atomic session planning skips the remote planner request', async () => {
+  let fetchCalls = 0
+  const session = new HarnessSession('做一个带弹性动画的计数器', {
+    kimi: { apiKey: 'test', baseUrl: 'https://example.test/v1', model: 'test', codeModel: 'test', temperature: 0 },
+    fetchImpl: async () => {
+      fetchCalls += 1
+      throw new Error('atomic planning should not call fetch')
+    },
+    persist: false,
+  })
+  const completedPlans = []
+  session.subscribe(({ event }) => {
+    if (event.type === 'plan.completed') completedPlans.push(event.plan)
+  })
+
+  const plan = await session.start()
+  assert.equal(fetchCalls, 0)
+  assert.equal(session.phase, 'awaiting_direction')
+  assert.equal(plan.components.length, 1)
+  assert.equal(completedPlans.length, 1)
+  assert.equal(completedPlans[0], plan)
+})
+
 test('full browser session plans, builds, compiles, selects and reviews', async () => {
   const dna = {
     concept: 'Material You', mood: ['playful'], colors: { primary: '#6750a4' }, typography: {},
@@ -130,10 +231,14 @@ test('full browser session plans, builds, compiles, selects and reviews', async 
     let result
     if (system.includes('Planner')) result = plan
     else if (system.includes('Reviewer')) result = { summary: '通过', patches: [] }
+    else if (system.includes('UI Draft Renderer')) {
+      result = { previewHtml: '<main style="padding:24px">Fast API draft is visible</main>' }
+    }
     else {
       const input = JSON.parse(body.messages[1].content)
       const file = input.outputSchema.files[0]
       result = {
+        previewHtml: '<main style="padding:24px;border-radius:24px;background:var(--dna-surface)">Streaming API preview is visible</main>',
         files: [{ path: file.path, content: 'export default function View(){ return null }' }],
         entryFile: file.path,
         previewProps: {},
@@ -150,8 +255,14 @@ test('full browser session plans, builds, compiles, selects and reviews', async 
     candidateCount: 2,
     runtime: { compile: async () => ({ ok: true }) },
   })
+  const streamedPreviews = []
+  session.subscribe((envelope) => {
+    if (envelope.event.type === 'preview.updated') streamedPreviews.push(envelope.event.html)
+  })
   const generatedPlan = await session.start()
   await session.chooseDirection(generatedPlan.visualDirections[0].id)
+  assert.ok(streamedPreviews.some((html) => html.includes('Fast API draft')))
+  assert.ok(streamedPreviews.some((html) => html.includes('Streaming API preview')))
   assert.equal(session.candidates.length, 6)
   for (const component of generatedPlan.components) {
     const candidate = session.candidates.find((item) => item.componentId === component.id)

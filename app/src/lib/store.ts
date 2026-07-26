@@ -24,6 +24,9 @@ export interface CandidateState {
   anim: string
   /** 随机种子：驱动加载器形态 / 纸屑配色 */
   seed: number
+  /** API 在完整 React 源码完成前返回的无脚本流式草图。 */
+  streamPreviewHtml?: string
+  streamPreviewComplete?: boolean
   /** 真实 Harness 生成的源码 artifact；存在时使用 iframe 沙箱预览 */
   artifact?: CandidateArtifact
   error?: string
@@ -136,6 +139,7 @@ function previewHeight(role: string) {
   if (/nav|header|导航|顶栏/i.test(role)) return 88
   if (/sidebar|侧栏/i.test(role)) return 360
   if (/table|列表|表格/i.test(role)) return 260
+  if (/计数|计算器|计时|播放器|表单|counter|calculator|timer|player|form/i.test(role)) return 360
   return 200
 }
 
@@ -292,6 +296,13 @@ export const useStore = create<Store>((set, get) => {
       set((state) => ({ tokensStreamed: state.tokensStreamed + event.receivedChars }))
       return
     }
+    if (event.type === 'preview.updated') {
+      patchCand(event.componentId, event.candidateId, () => ({
+        streamPreviewHtml: event.html,
+        streamPreviewComplete: event.complete,
+      }))
+      return
+    }
     if (event.type === 'code.delta') {
       const slot = findCandidateSlot(event.candidateId)
       if (slot) patchCand(slot.def.id, event.candidateId, (candidate) => ({ code: candidate.code + event.delta, progress: candidate.code.length + event.delta.length }))
@@ -322,7 +333,10 @@ export const useStore = create<Store>((set, get) => {
     if (event.type === 'render.ready') {
       const slot = findCandidateSlot(event.candidateId)
       if (!slot) return
-      patchCand(slot.def.id, event.candidateId, () => ({ status: 'rendered', anim: eventAnim(envelope.motionCue), error: undefined }))
+      patchCand(slot.def.id, event.candidateId, () => ({
+        status: 'rendered', anim: eventAnim(envelope.motionCue), error: undefined,
+        streamPreviewHtml: undefined, streamPreviewComplete: undefined,
+      }))
       const current = get().slots.find((item) => item.def.id === slot.def.id)
       if (current && !current.tryOnId && !current.selectedId) {
         patchSlot(slot.def.id, () => ({ tryOnId: event.candidateId }))

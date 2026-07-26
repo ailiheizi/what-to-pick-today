@@ -4,6 +4,7 @@ import { useStore, type CandidateState } from '../../lib/store'
 import { playClick, playTick } from '../../lib/sound'
 import { PlayfulLoader } from './playful'
 import GeneratedCandidatePreview from './GeneratedCandidatePreview'
+import StreamingHtmlPreview from './StreamingHtmlPreview'
 import { getDirection } from '../../lib/dna'
 
 function CandidateCard({
@@ -49,6 +50,10 @@ function CandidateCard({
             ) : (
               <cand.def.Component />
             )}
+          </div>
+        ) : cand.streamPreviewHtml ? (
+          <div className="pointer-events-none origin-top-left" style={{ width: '192%', height: previewH, transform: 'scale(0.52)' }}>
+            <StreamingHtmlPreview html={cand.streamPreviewHtml} cssVariables={cssVariables} title={`${cand.def.label} · API 流式草图`} />
           </div>
         ) : cand.status === 'failed' ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center px-3 text-center">
@@ -106,7 +111,7 @@ function CandidateCard({
 }
 
 export default function CandidateRail() {
-  const { slots, activeSlotId, setActiveSlot, tryOn, confirmCandidate, phase, directionId } = useStore()
+  const { slots, activeSlotId, setActiveSlot, tryOn, confirmCandidate, phase, directionId, harnessMode } = useStore()
   const cssVariables = getDirection(directionId ?? 'apple').vars
   const scrollRef = useRef<HTMLDivElement>(null)
   const lastIdx = useRef(-1)
@@ -154,7 +159,7 @@ export default function CandidateRail() {
         <div className="mt-1.5 text-[10px] leading-relaxed text-neutral-400">
           生成开始后，这里会实时出现
           <br />
-          每个槽位的 3 个候选。
+          {harnessMode === 'kimi' ? '首轮每个槽位先生成 1 个候选。' : '每个槽位的 3 个候选。'}
           <br />
           滚动试穿，点击扣合 🧩
         </div>

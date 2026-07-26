@@ -5,6 +5,7 @@ import { DIRECTIONS, getDirection } from '../../lib/dna'
 import { EXAMPLE_PROMPTS } from '../../lib/scenarios'
 import { ConfettiBurst, ConfettiRain, FloatingEmojis, PlayfulLoader } from './playful'
 import GeneratedCandidatePreview from './GeneratedCandidatePreview'
+import StreamingHtmlPreview from './StreamingHtmlPreview'
 
 /* ---------------- 空状态：产品自我介绍 ---------------- */
 
@@ -200,7 +201,7 @@ function SlotShell({ slot }: { slot: SlotState }) {
           ) : failed ? (
             `${slot.def.role} · 生成失败`
           ) : (
-            `${slot.def.role} · ${renderedCount}/3 候选`
+            `${slot.def.role} · ${renderedCount}/${Math.max(slot.candidates.length, 1)} 候选`
           )}
         </span>
       </div>
@@ -226,16 +227,24 @@ function SlotShell({ slot }: { slot: SlotState }) {
           {selected && !tryingOther && burst && <ConfettiBurst key={burst} seed={burst} />}
         </div>
       ) : (
-        /* 生成中：随机俏皮加载器，而不是枯燥骨架 */
-        <div className="rounded-2xl border-2 border-dashed border-neutral-300/70 bg-white/60 backdrop-blur overflow-hidden" style={{ minHeight: Math.min(slot.def.previewH, 128) }}>
+        /* 模型先流式返回无脚本 HTML 草图，完整 React 编译后原位替换。 */
+        <div className="rounded-2xl border border-neutral-300/70 bg-white/60 backdrop-blur overflow-hidden" style={{ minHeight: Math.min(Math.max(slot.def.previewH, 200), 360) }}>
           {streaming ? (
-            <div className="px-3 pt-3">
-              <PlayfulLoader seed={streaming.seed} label={streaming.status === 'compiling' ? '编译组装中' : undefined} />
-              <pre className="px-2 pb-2 text-[9px] leading-relaxed font-mono text-neutral-400 whitespace-pre-wrap break-all max-h-16 overflow-hidden opacity-70">
-                {streaming.code.slice(0, streaming.progress).split('\n').slice(-4).join('\n')}
-                <span className="inline-block w-1.5 h-3 bg-neutral-400 align-middle animate-pulse" />
-              </pre>
-            </div>
+            streaming.streamPreviewHtml ? (
+              <StreamingHtmlPreview
+                html={streaming.streamPreviewHtml}
+                cssVariables={getDirection(useStore.getState().directionId ?? 'apple').vars}
+                title={`${slot.def.role} · API 流式草图`}
+              />
+            ) : (
+              <div className="px-3 pt-3">
+                <PlayfulLoader seed={streaming.seed} label={streaming.status === 'compiling' ? '编译组装中' : '等待 API 第一帧'} />
+                <pre className="px-2 pb-2 text-[9px] leading-relaxed font-mono text-neutral-400 whitespace-pre-wrap break-all max-h-16 overflow-hidden opacity-70">
+                  {streaming.code.slice(0, streaming.progress).split('\n').slice(-4).join('\n')}
+                  <span className="inline-block w-1.5 h-3 bg-neutral-400 align-middle animate-pulse" />
+                </pre>
+              </div>
+            )
           ) : failed ? (
             <div className="px-4 py-5 text-center">
               <div className="text-[11px] font-bold text-rose-500">这个候选没有组装成功</div>
@@ -355,6 +364,7 @@ export default function CanvasStage() {
 
   const slotById = (id: string) => slots.find((s) => s.def.id === id)
   const gapCls = tweaks.density ? 'gap-4' : 'gap-5'
+  const candidateTotal = slots.reduce((total, slot) => total + slot.candidates.length, 0)
 
   return (
     <main className="flex-1 min-w-0 relative">
@@ -408,7 +418,7 @@ export default function CanvasStage() {
             <div className="mx-auto max-w-4xl mt-3 flex items-center justify-between text-[10px] text-neutral-500">
               <span>沙箱预览 · iframe 隔离 + CSP + 依赖白名单（{harnessMode === 'kimi' ? '真实生成' : '演示模式'}）</span>
               <span className="font-mono">
-                {scenario.slots.length} slots · {scenario.slots.length * 3} candidates
+                {scenario.slots.length} slots · {Math.max(candidateTotal, scenario.slots.length)} candidates
               </span>
             </div>
           </div>

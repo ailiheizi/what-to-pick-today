@@ -15,6 +15,8 @@ export function plannerMessages(requirement: string) {
         requirement,
         rules: [
           '按复杂度拆成 1 到 4 个可以独立替换的组件槽位；简单页面不要过度拆分',
+          '共享同一个核心交互状态的部分必须保持为一个槽位：计数显示+按钮、计算器显示+键盘、播放器画面+控制、表单字段+提交都禁止拆开',
+          '只有能够独立替换且通过清晰 inputs/outputs 协作的页面区块才允许拆分；不得让兄弟组件各自复制同一份状态',
           'visualDirections 固定返回空数组；视觉底板由客户端已有的苹果风、MD3、黑客风和复古风提供',
           '描述保持简洁；不要解释推理过程，不要添加示例数据之外的冗长文案',
           `依赖只能来自白名单：${ALLOWED_DEPENDENCIES.join(', ')}`,
@@ -46,7 +48,7 @@ export function builderMessages(input: {
   return [
     {
       role: 'system' as const,
-      content: `你是 Component Builder，只生成一个独立的 React + TypeScript 组件候选。严格遵守合同和依赖白名单。组件必须有真实内容、交互细节和符合 VisualDNA 的动效；禁止访问 cookie、localStorage、Node API 和未授权网络。必须处理 prefers-reduced-motion。${JSON_ONLY}`,
+      content: `你是 Component Builder，只生成一个独立的 React + TypeScript 组件候选。严格遵守合同和依赖白名单。组件必须有真实内容、交互细节和符合 VisualDNA 的动效；禁止访问 cookie、localStorage、Node API 和未授权网络。必须处理 prefers-reduced-motion。输出对象时 previewHtml 必须是第一个键，files 必须在它之后；这让浏览器能在完整源码生成前实时显示 API 草图。${JSON_ONLY}`,
     },
     {
       role: 'user' as const,
@@ -62,17 +64,57 @@ export function builderMessages(input: {
           experimental: '大胆实验构图和交互，但仍然可用',
         }[input.variant],
         rules: [
+          'previewHtml 是同一组件的紧凑无脚本草图；必须以一个立刻可见的根元素（例如 div/main）开头，不要以 style 标签开头',
+          'previewHtml 的前 240 个字符内必须出现用户能看见的关键内容（标题、数字、按钮文字或卡片），长 style 和装饰必须放到内容之后',
+          'previewHtml 使用内联样式或末尾 style 标签，绑定 --dna-* CSS 变量；禁止 script、iframe、外部资源和事件处理器',
+          'previewHtml 控制在 1200 字符以内，先表达布局、色彩、层级和关键内容，允许静态模拟交互状态',
           '默认导出一个 React 组件',
           '所有 React/TypeScript 代码必须放在 entryFile 单文件内；可以额外返回一个纯 CSS 文件，但禁止相对模块导入',
           '优先使用 CSS 变量绑定 VisualDNA，不在组件里复制项目级 token',
+          '若合同声明 inputs，必须从 props 使用这些共享输入；若声明 outputs，必须调用同名回调，不得在组件内部复制兄弟组件负责的状态',
+          `同页兄弟组件为：${input.plan.components.filter((item) => item.id !== input.component.id).map((item) => `${item.id}:${item.role}`).join('；') || '无'}；当前组件不得重复它们的职责`,
           '不得省略代码，不得返回伪代码',
         ],
         outputSchema: {
+          previewHtml: '<div style="...">可立即显示的完整紧凑草图</div>',
           files: [{ path: entryFile, content: '完整源码' }],
           entryFile,
           previewProps: {},
           notes: ['简短说明'],
         },
+      }),
+    },
+  ]
+}
+
+/**
+ * A deliberately small, independent API request used as the first visual frame.
+ * The full Builder runs at the same time and later replaces this draft with the
+ * compiled React artifact.
+ */
+export function draftPreviewMessages(input: {
+  requirement: string
+  direction: VisualDirection
+  component: ComponentContract
+}) {
+  return [
+    {
+      role: 'system' as const,
+      content: `你是 UI Draft Renderer。只返回一个紧凑的无脚本 HTML 组件草图，不生成 React 源码，不解释。previewHtml 必须是 JSON 的第一个且唯一的键。${JSON_ONLY}`,
+    },
+    {
+      role: 'user' as const,
+      content: JSON.stringify({
+        requirement: input.requirement,
+        visualDNA: input.direction.visualDNA,
+        componentContract: input.component,
+        rules: [
+          '根元素必须立刻包含关键可见内容；前 240 个字符出现标题、数字或按钮文字',
+          '使用内联样式，允许末尾追加 style；绑定 --dna-* CSS 变量',
+          '禁止 script、iframe、外部资源、表单提交和事件处理器',
+          '控制在 900 字符以内，优先完整布局和清晰层级',
+        ],
+        outputSchema: { previewHtml: '<main style="...">可立即显示的完整组件草图</main>' },
       }),
     },
   ]

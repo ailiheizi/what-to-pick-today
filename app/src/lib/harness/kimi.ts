@@ -12,6 +12,56 @@ type CompletionOptions = {
   maxTokens?: number
 }
 
+export type StreamingJsonString = {
+  found: boolean
+  complete: boolean
+  value: string
+}
+
+/**
+ * Extract a JSON string while the surrounding JSON document is still streaming.
+ * The returned value is safe to use as a draft; an incomplete escape at the tail
+ * is ignored until the next SSE delta arrives.
+ */
+export function extractStreamingJsonString(text: string, fieldName: string): StreamingJsonString {
+  const fieldAt = text.indexOf(JSON.stringify(fieldName))
+  if (fieldAt < 0) return { found: false, complete: false, value: '' }
+  let cursor = fieldAt + JSON.stringify(fieldName).length
+  while (/\s/.test(text[cursor] ?? '')) cursor += 1
+  if (text[cursor] !== ':') return { found: true, complete: false, value: '' }
+  cursor += 1
+  while (/\s/.test(text[cursor] ?? '')) cursor += 1
+  if (text[cursor] !== '"') return { found: true, complete: false, value: '' }
+  cursor += 1
+
+  let value = ''
+  decode: while (cursor < text.length) {
+    const char = text[cursor]
+    cursor += 1
+    if (char === '"') return { found: true, complete: true, value }
+    if (char !== '\\') {
+      value += char
+      continue
+    }
+    if (cursor >= text.length) break
+    const escaped = text[cursor]
+    cursor += 1
+    if (escaped === 'u') {
+      if (cursor + 4 > text.length) break decode
+      const hex = text.slice(cursor, cursor + 4)
+      if (!/^[0-9a-f]{4}$/i.test(hex)) break decode
+      value += String.fromCharCode(Number.parseInt(hex, 16))
+      cursor += 4
+      continue
+    }
+    const escapes: Record<string, string> = {
+      '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t',
+    }
+    value += escapes[escaped] ?? escaped
+  }
+  return { found: true, complete: false, value }
+}
+
 function parseJson(text: string): unknown {
   const trimmed = text.trim()
   try {
