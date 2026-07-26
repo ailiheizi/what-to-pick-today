@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "check:secrets": "node ../scripts/check-secrets.mjs",
     "test:harness": "tsx --test test/*.test.mjs",
     "lint": "eslint .",
     "preview": "vite preview"

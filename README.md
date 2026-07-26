@@ -22,6 +22,19 @@ npm run dev
 
 应用不要求服务端环境变量。Kimi API Key 由使用者在应用设置中填写，并保存在其浏览器中。请勿将私人 Key 提交到仓库，或以 `VITE_` 环境变量注入公开部署，因为 Vite 会把它打包进浏览器代码。
 
+### 本地测试凭据
+
+仓库根目录的 `.env` 仅供本地开发、Codex 真实 API 测试和完成报告使用，不是应用运行时依赖。可复制 [`.env.example`](./.env.example) 并填写：
+
+- `AI_PROXY_BASE_URL`：OpenAI-compatible API 地址。
+- `AI_PROXY_API_KEY`：本地端到端测试使用的临时模型 Key。
+- `RESEND_API_KEY`：完成报告邮件使用的临时 Resend Token。
+- `RESEND_FROM`、`RESEND_REPORT_TO`：可选的报告发件人与收件人。
+
+`.env` 与 `.env.*` 已被 Git 忽略，只有不含真实凭据的 `.env.example` 可以提交。秘密变量禁止使用 `VITE_` 前缀，以免被 Vite 打包进公开浏览器代码。
+
+提交前运行 `cd app && npm run check:secrets`。检查只读取 Git 已跟踪文件，不读取被忽略的 `.env`，并且只报告疑似凭据所在的文件和行号，不打印凭据内容。
+
 ## 检查
 
 ```bash
