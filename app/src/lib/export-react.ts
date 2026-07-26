@@ -1,0 +1,164 @@
+// React 源码导出器：把用户挑选的候选组件，连同数据、Visual DNA 与共享语义层，
+// 拼装成一个可直接放进 React 项目（Tailwind + recharts + lucide-react）的单文件页面。
+// 候选实现源码通过 Vite ?raw 原样抽取 —— 演示所见即所得，导出即所用。
+import dashboardRaw from '../candidates/dashboard.tsx?raw'
+import landingRaw from '../candidates/landing.tsx?raw'
+import dataRaw from '../candidates/data.ts?raw'
+import type { Scenario } from '../candidates/types'
+import { getDirection } from './dna'
+import type { SlotState } from './store'
+
+/** 从源码中按花括号配平抽取一个函数定义 */
+function extractFunction(src: string, name: string): string | null {
+  const idx = src.indexOf(`function ${name}(`)
+  if (idx < 0) return null
+  const start = src.indexOf('{', idx)
+  let depth = 0
+  for (let j = start; j < src.length; j++) {
+    if (src[j] === '{') depth++
+    else if (src[j] === '}') {
+      depth--
+      if (depth === 0) return src.slice(idx, j + 1)
+    }
+  }
+  return null
+}
+
+/** 抽取单行常量（如 const T = '...' / const ICONS = {...}） */
+function extractConstLine(src: string, name: string): string | null {
+  const line = src.split('\n').find((l) => l.trimStart().startsWith(`const ${name} `) || l.trimStart().startsWith(`const ${name}:`))
+  return line ?? null
+}
+
+/** 只保留生成代码真正用到的 import 名称，避免未使用告警 */
+function pruneImports(raw: string, body: string, modules: string[]): string[] {
+  const out: string[] = []
+  for (const mod of modules) {
+    const m = raw.match(new RegExp(`import \\{([\\s\\S]*?)\\} from '${mod}'`))
+    if (!m) continue
+    const used = m[1]
+      .split(',')
+      .map((s) => s.trim())
+      .filter((name) => name && new RegExp(`\\b${name}\\b`).test(body))
+    if (used.length) out.push(`import { ${used.join(', ')} } from '${mod}'`)
+  }
+  return out
+}
+
+/** 与 src/index.css 中 .dna-* 共享语义层保持一致（导出时内联） */
+function sharedCss(vars: Record<string, string>): string {
+  const varLines = Object.entries(vars)
+    .map(([k, v]) => `    ${k}: ${v};`)
+    .join('\n')
+  return `
+.wtpt-scope {
+${varLines}
+  font-family: var(--dna-font);
+  background: var(--dna-bg);
+  color: var(--dna-text);
+}
+.wtpt-scope .dna-card { background: var(--dna-surface); border: 1px solid var(--dna-line); border-radius: var(--dna-radius); box-shadow: var(--dna-shadow); }
+.wtpt-scope .dna-chrome { background: var(--dna-surface); }
+.wtpt-scope .dna-fill { background: var(--dna-surface2); }
+.wtpt-scope .dna-line-b { border-bottom: 1px solid var(--dna-line); }
+.wtpt-scope .dna-line-r { border-right: 1px solid var(--dna-line); }
+.wtpt-scope .dna-line-t { border-top: 1px solid var(--dna-line); }
+.wtpt-scope .dna-text { color: var(--dna-text); }
+.wtpt-scope .dna-muted { color: var(--dna-muted); }
+.wtpt-scope .dna-accent-text { color: var(--dna-accent); }
+.wtpt-scope .dna-accent-bg { background: var(--dna-accent); }
+`
+}
+
+export function buildReactSource(opts: {
+  prompt: string
+  scenario: Scenario
+  directionId: string
+  slots: SlotState[]
+}): { code: string; missing: string[] } {
+  const { prompt, scenario, directionId, slots } = opts
+  const dir = getDirection(directionId)
+  const raw = scenario.layout === 'dashboard' ? dashboardRaw : landingRaw
+
+  // 1. 抽取选中的组件实现
+  const picked: { slotId: string; name: string }[] = []
+  const missing: string[] = []
+  for (const slot of slots) {
+    const cand = slot.candidates.find((c) => c.def.id === slot.selectedId)
+    if (!cand) continue
+    const name = cand.def.Component.name
+    picked.push({ slotId: slot.def.id, name })
+  }
+  const bodies: string[] = []
+  for (const p of picked) {
+    const fn = extractFunction(raw, p.name)
+    if (fn) bodies.push(fn)
+    else missing.push(p.name)
+  }
+  let body = bodies.join('\n\n')
+
+  // 2. 共享依赖：过渡常量 T、辅助组件、数据
+  const tLine = extractConstLine(raw, 'T') ?? ''
+  const helpers: string[] = []
+  if (/\bStatusPill\b/.test(body)) helpers.push(extractFunction(raw, 'StatusPill') ?? '')
+  if (/\bICONS\b/.test(body)) helpers.push(extractConstLine(raw, 'ICONS') ?? '')
+  const data = dataRaw.replace(/export const /g, 'const ')
+  body = [tLine, ...helpers, body].filter(Boolean).join('\n\n')
+
+  // 3. 页面组合（复刻画布布局）
+  const by = (slotId: string) => picked.find((p) => p.slotId === slotId)?.name
+  const layout =
+    scenario.layout === 'dashboard'
+      ? `<div className="min-h-screen flex flex-col">
+        ${by('header') ? `<${by('header')} />` : ''}
+        <div className="flex flex-1 items-stretch">
+          ${by('sidebar') ? `<${by('sidebar')} />` : ''}
+          <div className="flex-1 min-w-0 p-4 flex flex-col gap-5">
+            ${by('stats') ? `<${by('stats')} />` : ''}
+            ${by('chart') ? `<${by('chart')} />` : ''}
+            ${by('table') ? `<${by('table')} />` : ''}
+          </div>
+        </div>
+      </div>`
+      : `<div className="min-h-screen flex flex-col">
+        ${(['nav', 'hero', 'features', 'cta'] as const).map((id) => (by(id) ? `<${by(id)} />` : '')).join('\n        ')}
+      </div>`
+
+  // 4. import 剪枝
+  const imports = pruneImports(raw, body + layout, ['recharts', 'lucide-react'])
+
+  const code = `// ✨ Generated by 今天选什么？ · ${new Date().toISOString()}
+// 需求：${prompt}
+// 场景：${scenario.title} · 风格底板：${dir.name}（${dir.concept}）
+// 依赖：tailwindcss + recharts + lucide-react
+${imports.join('\n')}
+
+const DNA_CSS = \`${sharedCss(dir.vars).replace(/`/g, '\\`')}\`
+
+// ===== 数据 =====
+${data}
+
+// ===== 组件（用户逐个挑选扣合） =====
+${body}
+
+// ===== 页面组合 =====
+export default function GeneratedPage() {
+  return (
+    <div className="wtpt-scope">
+      <style>{DNA_CSS}</style>
+      ${layout}
+    </div>
+  )
+}
+`
+  return { code, missing }
+}
+
+export function downloadText(filename: string, text: string, mime = 'text/plain') {
+  const blob = new Blob([text], { type: mime })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(a.href)
+}

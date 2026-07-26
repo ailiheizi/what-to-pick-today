@@ -1,0 +1,16 @@
+.DS_Store
+.vercel
+.env
+.env.*
+!.env.example
+
+node_modules/
+app/node_modules/
+app/dist/
+
+*.log
+npm-debug.log*
+
+# Local browser/CDP experiments
+app/test/*.temp.mjs
+

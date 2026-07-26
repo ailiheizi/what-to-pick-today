@@ -1,0 +1,53 @@
+import type { KimiSettings } from './types.ts'
+
+const CONFIG_KEY = 'what-to-pick-today:kimi-config:v1'
+const SESSION_KEY = 'what-to-pick-today:kimi-key:session'
+const PERSISTENT_KEY = 'what-to-pick-today:kimi-key:persistent'
+
+const DEFAULTS: Omit<KimiSettings, 'apiKey'> = {
+  baseUrl: 'https://api.moonshot.cn/v1',
+  model: 'kimi-k2.5',
+  codeModel: 'kimi-k3',
+  temperature: 1,
+}
+
+export type SaveSettingsOptions = {
+  rememberKey?: boolean
+}
+
+export function loadKimiSettings(): KimiSettings {
+  let config: Partial<Omit<KimiSettings, 'apiKey'>> = {}
+  try {
+    config = JSON.parse(localStorage.getItem(CONFIG_KEY) ?? '{}') as Partial<Omit<KimiSettings, 'apiKey'>>
+  } catch {
+    config = {}
+  }
+  const settings = {
+    ...DEFAULTS,
+    ...config,
+    apiKey: sessionStorage.getItem(SESSION_KEY) ?? localStorage.getItem(PERSISTENT_KEY) ?? import.meta.env.VITE_MOONSHOT_API_KEY ?? '',
+  }
+  if (['kimi-k2.5', 'kimi-k3'].includes(settings.model)) settings.temperature = 1
+  return settings
+}
+
+export function saveKimiSettings(settings: KimiSettings, options: SaveSettingsOptions = {}) {
+  localStorage.setItem(CONFIG_KEY, JSON.stringify({
+    baseUrl: settings.baseUrl,
+    model: settings.model,
+    codeModel: settings.codeModel,
+    temperature: settings.temperature,
+  }))
+  sessionStorage.setItem(SESSION_KEY, settings.apiKey)
+  if (options.rememberKey) localStorage.setItem(PERSISTENT_KEY, settings.apiKey)
+  else localStorage.removeItem(PERSISTENT_KEY)
+}
+
+export function clearKimiApiKey() {
+  sessionStorage.removeItem(SESSION_KEY)
+  localStorage.removeItem(PERSISTENT_KEY)
+}
+
+export function hasKimiApiKey() {
+  return Boolean(loadKimiSettings().apiKey.trim())
+}
