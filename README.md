@@ -33,6 +33,8 @@ npm run dev
 
 `.env` 与 `.env.*` 已被 Git 忽略，只有不含真实凭据的 `.env.example` 可以提交。秘密变量禁止使用 `VITE_` 前缀，以免被 Vite 打包进公开浏览器代码。
 
+早期说明式 `.env` 可以运行 `cd app && npm run env:migrate` 原子迁移为标准 dotenv。迁移器只有在完整识别三个必需值后才写入，文件权限设为 `0600`，不会打印值，也不会创建额外的密钥备份。
+
 本地供应商没有浏览器 CORS 时，Vite 开发服务器会根据 `AI_PROXY_BASE_URL` 启用 `/api/model` 转发，并在服务端注入 `AI_PROXY_API_KEY`。应用设置中点击“使用本地代理”，填写规划模型和组件模型即可，浏览器 Key 可以留空。该转发只存在于 `npm run dev`，生产构建仍是纯静态单前端。
 
 提交前运行 `cd app && npm run check:secrets`。检查只读取 Git 已跟踪文件，不读取被忽略的 `.env`，并且只报告疑似凭据所在的文件和行号，不打印凭据内容。

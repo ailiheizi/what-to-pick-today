@@ -8,6 +8,7 @@ import { parseCandidate, parsePlan } from '../src/lib/harness/schemas.ts'
 import { TaskScheduler } from '../src/lib/harness/scheduler.ts'
 import { HarnessSession } from '../src/lib/harness/session.ts'
 import { createSandboxDocument } from '../src/lib/harness/sandbox-runtime.ts'
+import { migrateLocalEnvContent } from '../../scripts/migrate-local-env.mjs'
 
 test('scheduler enforces concurrency and retries failed work', async () => {
   const controller = new AbortController()
@@ -100,6 +101,22 @@ test('local model proxy supports keyless browser requests and safe upstream rewr
   const client = new BrowserKimiClient({ apiKey: '', baseUrl: '/api/model', model: 'test', temperature: 0 }, fetchImpl)
   const result = await client.completeJson([], { signal: new AbortController().signal })
   assert.deepEqual(result, { ok: true })
+})
+
+test('legacy local credentials migrate to dotenv without exposing or dropping values', () => {
+  const modelKey = `sk-${'a'.repeat(24)}`
+  const resendKey = `re_${'b'.repeat(24)}`
+  const legacy = `resend token:${resendKey}\n\napikey:\nproxy.example.test\n${modelKey}`
+  const result = migrateLocalEnvContent(legacy)
+  assert.equal(result.changed, true)
+  assert.match(result.content, /^AI_PROXY_BASE_URL=https:\/\/proxy\.example\.test\/v1$/m)
+  assert.match(result.content, new RegExp(`^AI_PROXY_API_KEY=${modelKey}$`, 'm'))
+  assert.match(result.content, new RegExp(`^RESEND_API_KEY=${resendKey}$`, 'm'))
+  assert.doesNotMatch(result.content, /resend token|^apikey:/im)
+
+  const secondPass = migrateLocalEnvContent(result.content)
+  assert.equal(secondPass.changed, false)
+  assert.equal(secondPass.content, result.content)
 })
 
 test('streaming JSON strings expose a usable partial HTML draft', () => {
