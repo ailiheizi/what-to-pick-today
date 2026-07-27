@@ -39,6 +39,7 @@ AI_PROXY_API_KEY=temporary-key
 - `sandbox-runtime.ts`：Babel standalone 转译、CSP iframe 文档生成、`SandboxRuntimeAdapter` 与 iframe 选择桥。
 - `storage.ts`：IndexedDB 项目快照和事件历史。
 - `settings.ts`：BYOK 设置。Key 默认只放 `sessionStorage`；用户明确选择记住时才进入 `localStorage`。
+- `providers.ts`：DeepSeek、OpenAI、OpenRouter、Moonshot、本地代理与自定义服务预设；通过标准 `GET /models` 发现、去重和排序可用模型，CORS 或非标准响应失败时保留手动填写路径。
 - `prompts.ts`：Planner、Draft Renderer、Builder、Fixer、Reviewer、Revision 的角色提示词。
 - `export.ts`：把已选候选组装为可下载的 React 项目（`src/App.tsx` 入口 + 固定依赖版本）。
 - `local-proxy.ts`：开发用 `/api/model` 代理的路径解析与同源校验纯函数，供 Vite 插件复用。
@@ -170,6 +171,10 @@ type RuntimeAdapter = {
 Sandpack 与 WebContainers 都没有被采用，也不在 `app/package.json` 里，详见「与旧文档的差异」。未提供 adapter 时，Harness 会停在 `source.ready`，由界面编译后调用 `reportCompile`。
 
 初次聊天结束后，补充要求可以调用 `session.revise(instruction)`；Harness 只修改已经选中的候选，并继续遵守原组件合同和文件边界。
+
+所有槽位选择完成后，Reviewer 会读取已选组件源码、页面计划与 Visual DNA，最多提出 3 条局部补丁并分发到最多 3 个槽位。Harness 使用现有 Revision Builder 并行改写、逐个编译；成功的 revision 才原子替换，失败的槽位自动保留原版本。Reviewer 不允许改变组件合同、增加依赖或整页重写。
+
+生成提示词根据原始需求判断 UI 语言：中文需求的项目名、槽位职责、标题、按钮、表头、状态与提示默认使用简体中文；代码 id 与 prop 名仍保持英文标识符。预览共享值会把 `timeRange`、`selectedMetric` 等技术字段映射为自然产品文案，未知 prop 不再以“示例字段名”的形式暴露给用户。
 
 ## 基本用法
 

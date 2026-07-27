@@ -709,7 +709,7 @@ function ReviewOverlay() {
           ) : (
             <PartyPopper size={15} className="text-amber-500 anim-wiggle" />
           )}
-          {phase === 'reviewing' ? 'Reviewer · 视觉反馈循环' : '审查完成 · 补丁已应用 🎉'}
+          {phase === 'reviewing' ? '整页总监 · 正在统一与编译' : '审查完成 · 优化已安全应用 🎉'}
         </div>
         <div className="mt-3 space-y-2.5 max-h-44 overflow-y-auto">
           {reviewSteps.map((s, i) => (

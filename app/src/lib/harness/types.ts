@@ -116,6 +116,9 @@ export type ReviewPatch = {
 export type ReviewResult = {
   summary: string
   patches: ReviewPatch[]
+  /** Filled by the harness after safe, slot-scoped revisions finish. */
+  appliedComponentIds?: string[]
+  failedComponentIds?: string[]
 }
 
 export type GenerationEvent =

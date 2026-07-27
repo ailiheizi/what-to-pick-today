@@ -518,17 +518,23 @@ export const useStore = create<Store>((set, get) => {
       return
     }
     if (event.type === 'review.started') {
-      set({ phase: 'reviewing', reviewCursor: 0, reviewSteps: [{ text: '已选组件、PagePlan 与 Visual DNA 已发送给 Reviewer，正在检查一致性与响应式…' }] })
+      set({ phase: 'reviewing', reviewCursor: 0, reviewSteps: [
+        { text: '已选组件源码、PagePlan 与 Visual DNA 已发送给 Reviewer，正在统一文案、间距和内容关联…' },
+        { text: 'Reviewer 会把必要调整限制在最多 3 个槽位，并逐个编译验证最终版本。' },
+      ] })
       return
     }
     if (event.type === 'review.completed') {
+      const appliedCount = event.review.appliedComponentIds?.length ?? 0
+      const failedCount = event.review.failedComponentIds?.length ?? 0
       const steps: ReviewStep[] = [
         { text: `✓ ${event.review.summary}` },
-        ...event.review.patches.map((patch) => ({ text: patch.reason, patch: `Reviewer 建议 · ${patch.type.toUpperCase()} · ${patch.target}` })),
+        ...event.review.patches.map((patch) => ({ text: patch.reason, patch: `已审查 · ${patch.type.toUpperCase()} · ${patch.target}` })),
+        { text: `✓ 已自动应用并编译通过 ${appliedCount} 个槽位级优化${failedCount ? `；${failedCount} 个未通过的修订已安全回退` : ''}` },
       ]
       set({ phase: 'done', reviewSteps: steps, reviewCursor: steps.length, bigConfetti: Date.now() })
-      pushHistory('done', `页面完成 · Reviewer 返回 ${event.review.patches.length} 条优化建议`)
-      pushChat('ai', `页面审查完成：${event.review.summary} Reviewer 建议已记录，尚未自动改写已选组件。你可以继续提修改要求，或导出项目。`)
+      pushHistory('done', `页面完成 · 已自动应用 ${appliedCount} 个槽位级优化`)
+      pushChat('ai', `页面审查完成：${event.review.summary} 已自动应用 ${appliedCount} 个槽位级优化${failedCount ? `，并保留了 ${failedCount} 个未通过修订的原版本` : ''}。你可以继续提修改要求，或导出项目。`)
       sfx.playComplete()
       after(1500, () => set({ starOpen: true }))
       return

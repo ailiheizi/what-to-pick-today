@@ -4,19 +4,37 @@ import { builderAgentFor } from './agents.ts'
 const JSON_ONLY = '只返回合法 JSON，不要 Markdown 代码围栏，不要添加 JSON 之外的解释。'
 const ALLOWED_DEPENDENCIES = ['react', 'react-dom', 'lucide-react', 'motion']
 
-function sampleSharedValue(name: string, type: string) {
+export function preferredUiLanguage(requirement: string) {
+  const asksForEnglish = /\b(?:use|write|display|render)(?:\s+the)?(?:\s+ui|\s+interface|\s+copy|\s+content)?\s+(?:in\s+)?english\b/i.test(requirement)
+    || /(?:用|使用|采用|改成|输出|界面|文案|内容).{0,8}(?:英文|英语)/.test(requirement)
+  const rejectsEnglish = /(?:不要|禁止|避免|别用).{0,8}(?:英文|英语)/.test(requirement)
+  if (asksForEnglish && !rejectsEnglish) return 'English (en-US)'
+  return /[\u3400-\u9fff]/.test(requirement) ? '简体中文（zh-CN）' : 'English (en-US)'
+}
+
+function sampleSharedValue(name: string, type: string, language: string) {
   const key = name.toLowerCase()
   const normalizedType = type.toLowerCase()
-  if (/city|城市|location/.test(key)) return '上海'
+  const isChinese = language.startsWith('简体中文')
+  if (/city|城市|location/.test(key)) return isChinese ? '上海' : 'Shanghai'
   if (/unit|单位/.test(key)) return '°C'
-  if (/locale|语言/.test(key)) return 'zh-CN'
+  if (/locale|语言/.test(key)) return isChinese ? 'zh-CN' : 'en-US'
+  if (/time.?range|date.?range|时间范围|日期范围/.test(key)) return isChinese ? '近 30 天' : 'Last 30 days'
+  if (/selected.?metric|metric|指标/.test(key)) return isChinese ? '收入' : 'Revenue'
+  if (/category|分类/.test(key)) return isChinese ? '全部' : 'All'
+  if (/theme|主题/.test(key)) return isChinese ? '明亮' : 'Light'
+  if (/currency|币种/.test(key)) return 'CNY'
+  if (/query|search|keyword|搜索|关键词/.test(key)) return ''
   if (/boolean|bool/.test(normalizedType)) return false
   if (/number|int|float/.test(normalizedType)) return 0
   if (/array|\[\]/.test(normalizedType)) return []
-  return `示例${name}`
+  // Unknown prop identifiers are implementation details, not acceptable UI copy.
+  // An empty value keeps the preview contract intact without leaking e.g. `accountId`.
+  return ''
 }
 
-export function sharedPreviewProps(plan: PagePlan) {
+export function sharedPreviewProps(plan: PagePlan, requirement = '') {
+  const language = preferredUiLanguage(requirement || `${plan.project.name} ${plan.project.description}`)
   const occurrences = new Map<string, { name: string; type: string; count: number }>()
   for (const component of plan.components) {
     for (const input of component.inputs) {
@@ -29,20 +47,21 @@ export function sharedPreviewProps(plan: PagePlan) {
   }
   return Object.fromEntries([...occurrences.values()]
     .filter((input) => input.count > 1)
-    .map((input) => [input.name, sampleSharedValue(input.name, input.type)]))
+    .map((input) => [input.name, sampleSharedValue(input.name, input.type, language)]))
 }
 
-function compositionContext(plan: PagePlan, component: ComponentContract) {
+function compositionContext(plan: PagePlan, component: ComponentContract, requirement: string) {
   return {
     currentResponsibility: { id: component.id, role: component.role, inputs: component.inputs, outputs: component.outputs },
     siblingResponsibilities: plan.components
       .filter((item) => item.id !== component.id)
       .map((item) => ({ id: item.id, role: item.role, inputs: item.inputs, outputs: item.outputs })),
-    sharedPreviewProps: sharedPreviewProps(plan),
+    sharedPreviewProps: sharedPreviewProps(plan, requirement),
   }
 }
 
 export function plannerMessages(requirement: string) {
+  const uiLanguage = preferredUiLanguage(requirement)
   return [
     {
       role: 'system' as const,
@@ -52,7 +71,10 @@ export function plannerMessages(requirement: string) {
       role: 'user' as const,
       content: JSON.stringify({
         requirement,
+        uiLanguage,
         rules: [
+          `project.name、project.description、pages[].name、components[].role 和所有 description 必须使用 ${uiLanguage}；不得因为字段 schema 是英文就输出英文可见文案`,
+          'id、route、slot、input/output name 是代码标识符，保持简短的英文 kebab-case 或 camelCase；不要把它们当成用户可见文案',
           '按复杂度拆成 1 到 4 个可以独立替换的组件槽位；简单页面不要过度拆分',
           '共享同一个核心交互状态的部分必须保持为一个槽位：计数显示+按钮、计算器显示+键盘、播放器画面+控制、表单字段+提交都禁止拆开',
           '只有能够独立替换且通过清晰 inputs/outputs 协作的页面区块才允许拆分；不得让兄弟组件各自复制同一份状态',
@@ -85,6 +107,7 @@ export function builderMessages(input: {
   component: ComponentContract
   variant: CandidateVariant
 }) {
+  const uiLanguage = preferredUiLanguage(input.requirement)
   const entryFile = `src/generated/${input.component.id}/${input.variant}.tsx`
   const agent = builderAgentFor(input.variant)
   const variantProfile = {
@@ -119,11 +142,14 @@ export function builderMessages(input: {
         project: input.plan.project,
         visualDNA: input.direction.visualDNA,
         componentContract: input.component,
-        compositionContext: compositionContext(input.plan, input.component),
+        uiLanguage,
+        compositionContext: compositionContext(input.plan, input.component, input.requirement),
         builderAgent: agent,
         variant: input.variant,
         variantProfile,
         rules: [
+          `previewHtml 和 React 组件中所有用户可见的标题、按钮、表头、图例、状态、提示和空状态必须使用 ${uiLanguage}；MRR、SaaS 等通用行业缩写可保留`,
+          '禁止把 timeRange、selectedMetric、accountId 等 input/prop 标识符或“示例${propName}”直接渲染给用户；必须转成自然、本地化的产品文案',
           'previewHtml 是同一组件的紧凑无脚本草图；必须以一个立刻可见的根元素（例如 div/main）开头，不要以 style 标签开头',
           'previewHtml 的前 240 个字符内必须出现用户能看见的关键内容（标题、数字、按钮文字或卡片），长 style 和装饰必须放到内容之后',
           'previewHtml 使用内联样式或末尾 style 标签，绑定 --dna-* CSS 变量；禁止 script、iframe、外部资源和事件处理器',
@@ -165,6 +191,7 @@ export function draftPreviewMessages(input: {
   variant: CandidateVariant
 }) {
   const agent = builderAgentFor(input.variant)
+  const uiLanguage = preferredUiLanguage(input.requirement)
   return [
     {
       role: 'system' as const,
@@ -174,11 +201,14 @@ export function draftPreviewMessages(input: {
       role: 'user' as const,
       content: JSON.stringify({
         requirement: input.requirement,
+        uiLanguage,
         visualDNA: input.direction.visualDNA,
         componentContract: input.component,
-        compositionContext: compositionContext(input.plan, input.component),
+        compositionContext: compositionContext(input.plan, input.component, input.requirement),
         builderAgent: agent,
         rules: [
+          `所有用户可见文案必须使用 ${uiLanguage}；通用行业缩写可保留`,
+          '不得把 timeRange、selectedMetric 等 prop 标识符或“示例${propName}”作为可见文案',
           '根元素必须立刻包含关键可见内容；前 240 个字符出现标题、数字或按钮文字',
           '使用内联样式，允许末尾追加 style；绑定 --dna-* CSS 变量',
           '禁止 script、iframe、外部资源、表单提交和事件处理器',
@@ -223,25 +253,42 @@ export function fixerMessages(input: {
 }
 
 export function reviewerMessages(input: {
+  requirement: string
   plan: PagePlan
   direction: VisualDirection
   selections: Record<string, string>
+  selectedCandidates: Array<{
+    componentId: string
+    candidateId: string
+    contract: ComponentContract
+    previewProps: Record<string, unknown>
+    files: CandidateArtifact['files']
+  }>
   screenshot?: string
 }) {
   const request = JSON.stringify({
+    requirement: input.requirement,
     plan: input.plan,
     visualDNA: input.direction.visualDNA,
     selections: input.selections,
-    rules: ['只允许 token、props、CSS 或指定组件重新生成补丁', '不要重写整个项目'],
+    selectedCandidates: input.selectedCandidates,
+    rules: [
+      '检查重复标题、间距节奏、视觉层级、组件内容关联、共享状态、响应式和用户可见文案的一致性',
+      '如果需求主要使用中文，所有用户可见文案必须统一为中文，但代码标识符保持英文',
+      '最多返回 3 个补丁；target 必须是实际 componentId，或用 page 表示需要分发的整页一致性调整',
+      '每个补丁只允许 token、props、CSS 或指定组件重新生成；不得改变组件合同、增加依赖或重写整个项目',
+      'value.instruction 必须给局部 Revision Builder 一条可直接执行的具体修改指令',
+      '页面已经可运行；没有明确收益时返回空 patches，不要为了修改而修改',
+    ],
     outputSchema: {
       summary: 'string',
-      patches: [{ type: 'token | props | css | regenerate', target: 'string', reason: 'string', value: {} }],
+      patches: [{ type: 'token | props | css | regenerate', target: '实际 componentId | page', reason: 'string', value: { instruction: '具体修改要求' } }],
     },
   })
   return [
     {
       role: 'system' as const,
-      content: `你是最终页面 Reviewer。检查视觉一致性、层级、响应式、可访问性和交互反馈，只提出边界明确的局部补丁。${JSON_ONLY}`,
+      content: `你是最终页面 Reviewer 和整页设计总监。你会读取所有已选组件的完整源码，检查视觉一致性、层级、响应式、可访问性、内容关联和交互反馈，只提出可以在槽位边界内安全执行的局部补丁。${JSON_ONLY}`,
     },
     {
       role: 'user' as const,
@@ -254,10 +301,12 @@ export function reviewerMessages(input: {
 
 export function revisionMessages(input: {
   instruction: string
+  requirement?: string
   component: ComponentContract
   direction: VisualDirection
   candidate: CandidateArtifact
 }) {
+  const uiLanguage = preferredUiLanguage(input.requirement || input.instruction)
   return [
     {
       role: 'system' as const,
@@ -267,9 +316,14 @@ export function revisionMessages(input: {
       role: 'user' as const,
       content: JSON.stringify({
         instruction: input.instruction,
+        uiLanguage,
         componentContract: input.component,
         visualDNA: input.direction.visualDNA,
         currentCandidate: input.candidate,
+        rules: [
+          `新增或修改的用户可见文案必须使用 ${uiLanguage}，并统一现有可见文案的语言`,
+          '不得把 input/prop 代码标识符或“示例${propName}”渲染到界面',
+        ],
         outputSchema: {
           files: input.candidate.files.map((file) => ({ path: file.path, content: '修改后的完整源码' })),
           entryFile: input.candidate.entryFile,

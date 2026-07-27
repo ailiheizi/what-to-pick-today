@@ -462,7 +462,7 @@ export class HarnessSession {
     const candidate = parseCandidate(raw, {
       id: candidateId, componentId, variant, agent: builderAgentFor(variant), attemptId,
     })
-    candidate.previewProps = { ...candidate.previewProps, ...sharedPreviewProps(this.#plan) }
+    candidate.previewProps = { ...candidate.previewProps, ...sharedPreviewProps(this.#plan, this.requirement) }
     // Last checkpoint before the artifact becomes session state. Parsing is
     // synchronous, but `parseCandidate` runs after two awaited streams, so the
     // run can have been replaced between the check above and this line only via
@@ -617,7 +617,13 @@ export class HarnessSession {
     const component = this.#plan.components.find((item) => item.id === current.componentId)
     if (!component) throw new Error(`不存在组件合同：${current.componentId}`)
     try {
-      const raw = await this.#client.completeJson(revisionMessages({ instruction, component, direction: this.#direction, candidate: current }), {
+      const raw = await this.#client.completeJson(revisionMessages({
+        instruction,
+        requirement: this.requirement,
+        component,
+        direction: this.#direction,
+        candidate: current,
+      }), {
         signal,
         model: this.#options.kimi.codeModel,
         maxTokens: 6000,
@@ -655,13 +661,72 @@ export class HarnessSession {
     if (this.#selections.size !== this.#plan.components.length) throw new Error('请先为所有组件槽位确认候选')
     this.#phase = 'reviewing'
     this.events.publish({ type: 'review.started' }, 'reviewing')
+    const selectedCandidates = this.#plan.components.flatMap((contract) => {
+      const candidateId = this.#selections.get(contract.id)
+      if (!candidateId) return []
+      const candidate = this.#requireCandidate(candidateId)
+      return [{
+        componentId: contract.id,
+        candidateId,
+        contract,
+        previewProps: candidate.previewProps,
+        files: candidate.files,
+      }]
+    })
     const raw = await this.#client.completeJson(reviewerMessages({
+      requirement: this.requirement,
       plan: this.#plan,
       direction: this.#direction,
       selections: Object.fromEntries(this.#selections),
+      selectedCandidates,
       screenshot,
     }), { signal: this.#abortController.signal, maxTokens: 2500 })
-    this.#review = parseReview(raw)
+    const parsedReview = parseReview(raw)
+    // Model output is advisory. Enforce both the patch and component limits in
+    // code so a broad `page` suggestion cannot silently fan out across a large
+    // plan or turn the final pass into a costly whole-project rewrite.
+    const patches = parsedReview.patches.slice(0, 3)
+    const validComponentIds = new Set(this.#plan.components.map((component) => component.id))
+    const patchesByComponent = new Map<string, typeof patches>()
+    const addPatch = (componentId: string, patch: (typeof patches)[number]) => {
+      if (!validComponentIds.has(componentId) || !this.#selections.has(componentId)) return
+      const current = patchesByComponent.get(componentId)
+      if (current) current.push(patch)
+      else if (patchesByComponent.size < 3) patchesByComponent.set(componentId, [patch])
+    }
+    for (const patch of patches) {
+      if (patch.target === 'page') {
+        for (const component of this.#plan.components) addPatch(component.id, patch)
+      } else {
+        addPatch(patch.target, patch)
+      }
+    }
+
+    const scheduler = new TaskScheduler<CandidateArtifact>({
+      concurrency: Math.min(this.#options.concurrency, 3),
+      retries: this.#options.retries,
+      signal: this.#abortController.signal,
+      onRetry: (taskId, attempt, error) => this.events.publish({ type: 'task.retrying', taskId, attempt, error: error.message }, 'reviewing'),
+      onFailed: (taskId, error) => this.events.publish({ type: 'task.failed', taskId, error: error.message }, 'reviewing'),
+    })
+    for (const [componentId, componentPatches] of patchesByComponent) {
+      const candidateId = this.#selections.get(componentId)
+      if (!candidateId) continue
+      const instruction = componentPatches.map((patch) => {
+        const explicitInstruction = typeof patch.value === 'object' && patch.value !== null && 'instruction' in patch.value
+          ? String((patch.value as { instruction?: unknown }).instruction ?? '')
+          : ''
+        return `[${patch.type}] ${explicitInstruction || patch.reason}`
+      }).join('\n')
+      scheduler.add({
+        id: `review-revise:${candidateId}`,
+        run: async (signal) => this.#reviseCandidate(candidateId, `整页审查后的槽位级优化：\n${instruction}`, signal),
+      })
+    }
+    const revised = await scheduler.run()
+    const appliedComponentIds = revised.map((candidate) => candidate.componentId)
+    const failedComponentIds = [...patchesByComponent.keys()].filter((componentId) => !appliedComponentIds.includes(componentId))
+    this.#review = { ...parsedReview, patches, appliedComponentIds, failedComponentIds }
     this.#phase = 'complete'
     this.events.publish({ type: 'review.completed', review: this.#review }, 'ready')
     await this.#persist()

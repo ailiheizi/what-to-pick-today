@@ -758,6 +758,80 @@ test('full browser session plans, builds, compiles, selects and reviews', async 
   assert.equal(review.summary, '通过')
 })
 
+test('final reviewer reads selected source, safely revises at most three slots and keeps failed originals', async () => {
+  const dna = {
+    concept: 'Cohesive', mood: ['clear'], colors: {}, typography: {},
+    geometry: { radius: '20px', border: 'soft', density: 'normal' },
+    motion: { personality: 'subtle', duration: '200ms', easing: 'ease-out' },
+    compositionRules: ['shared rhythm'],
+  }
+  const direction = { id: 'cohesive', name: '统一', description: '', visualDNA: dna }
+  const components = ['one', 'two', 'three', 'four'].map((id) => ({
+    id, role: `${id} 区域`, slot: id, width: 'fluid', inputs: [], outputs: [], dependencies: ['react'], designTokens: [],
+  }))
+  const plan = {
+    project: { name: '审查测试', description: '' },
+    pages: [{ id: 'home', name: '首页', route: '/', slots: components.map(({ id }) => id) }],
+    visualDirections: [direction], components,
+  }
+  const candidates = components.map(({ id }) => ({
+    id: `${id}-candidate`, componentId: id, variant: 'expressive',
+    files: [{ path: `src/${id}.tsx`, content: `export default function ${id}(){ return '${id}-original' }` }],
+    entryFile: `src/${id}.tsx`, previewProps: {}, notes: [], runtimeStatus: 'rendered', compileErrors: [], fixAttempts: 0,
+  }))
+  let reviewerRequest
+  const revisionTargets = []
+  const fetchImpl = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    const system = body.messages[0].content
+    let result
+    if (system.includes('Reviewer')) {
+      reviewerRequest = JSON.parse(body.messages[1].content)
+      result = {
+        summary: '统一整页节奏',
+        patches: [{ type: 'css', target: 'page', reason: '统一槽位间距', value: { instruction: '将根容器间距统一为 24px' } }],
+      }
+    } else {
+      const input = JSON.parse(body.messages[1].content)
+      const id = input.componentContract.id
+      revisionTargets.push(id)
+      result = {
+        files: [{ path: input.currentCandidate.files[0].path, content: `export default function ${id}(){ return '${id}-revised' }` }],
+        entryFile: input.currentCandidate.entryFile, previewProps: input.currentCandidate.previewProps, notes: ['review revision'],
+      }
+    }
+    const payload = `data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify(result) } }] })}\n\ndata: [DONE]\n\n`
+    return new Response(payload, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  }
+  const now = Date.now()
+  const session = new HarnessSession('做一个中文页面', {
+    kimi: { apiKey: 'test', baseUrl: 'https://example.test/v1', model: 'test', temperature: 0 },
+    fetchImpl, persist: false, retries: 0, concurrency: 4,
+    runtime: {
+      compile: async (candidate) => candidate.componentId === 'two'
+        ? { ok: false, errors: ['two revision rejected'] }
+        : { ok: true },
+    },
+  }, {
+    version: 1, sessionId: 'review-session', requirement: '做一个中文页面', phase: 'selecting',
+    createdAt: now, updatedAt: now, plan, direction, candidates,
+    selections: Object.fromEntries(components.map(({ id }) => [id, `${id}-candidate`])), review: null, events: [],
+  })
+
+  const review = await session.review()
+
+  assert.equal(session.phase, 'complete')
+  assert.equal(reviewerRequest.selectedCandidates.length, 4)
+  assert.match(reviewerRequest.selectedCandidates[0].files[0].content, /one-original/)
+  assert.deepEqual(new Set(revisionTargets), new Set(['one', 'two', 'three']))
+  assert.deepEqual(new Set(review.appliedComponentIds), new Set(['one', 'three']))
+  assert.deepEqual(review.failedComponentIds, ['two'])
+  assert.match(session.candidates.find(({ componentId }) => componentId === 'one').files[0].content, /one-revised/)
+  assert.match(session.candidates.find(({ componentId }) => componentId === 'two').files[0].content, /two-original/)
+  assert.match(session.candidates.find(({ componentId }) => componentId === 'four').files[0].content, /four-original/)
+  assert.ok(session.events.all().some(({ event }) => event.type === 'review.completed'))
+})
+
 test('sandbox transpiles TSX and rejects relative module imports', async () => {
   const candidate = {
     id: 'preview', componentId: 'hero', variant: 'expressive', entryFile: 'src/Preview.tsx', previewProps: {}, notes: [],
