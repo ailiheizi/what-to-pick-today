@@ -73,7 +73,7 @@ export class HarnessSession {
       concurrency: options.concurrency ?? 4,
       retries: options.retries ?? 1,
       maxFixAttempts: options.maxFixAttempts ?? 2,
-      candidateCount: options.candidateCount ?? 3,
+      candidateCount: options.candidateCount ?? 1,
       persist: options.persist ?? true,
       ...options,
     }
@@ -82,7 +82,14 @@ export class HarnessSession {
     this.#createdAt = restored?.createdAt ?? Date.now()
     this.#updatedAt = restored?.updatedAt ?? this.#createdAt
     if (restored) {
-      this.#phase = restored.phase
+      // Network work cannot survive a page refresh. Restore interrupted phases
+      // to an honest, resumable selection state instead of showing phantom
+      // spinners for requests that no longer exist.
+      this.#phase = ['generating', 'reviewing'].includes(restored.phase)
+        ? (restored.direction ? 'selecting' : 'awaiting_direction')
+        : restored.phase === 'planning'
+          ? (restored.plan ? 'awaiting_direction' : 'failed')
+          : restored.phase
       this.#plan = restored.plan
       this.#direction = restored.direction
       this.#candidates = new Map(restored.candidates.map((candidate) => [candidate.id, candidate]))
@@ -163,7 +170,7 @@ export class HarnessSession {
     if (this.#phase === 'awaiting_direction') await this.generateCandidates()
   }
 
-  async generateCandidates(componentIds?: string[]) {
+  async generateCandidates(componentIds?: string[], requestedCount: number = this.#options.candidateCount) {
     if (!this.#plan || !this.#direction) throw new Error('页面计划和设计方向尚未就绪')
     if (this.#generationRunning) throw new Error('已有一批候选正在生成，请先停止或等待完成')
     this.#generationRunning = true
@@ -179,7 +186,7 @@ export class HarnessSession {
         .filter((candidate) => candidate.componentId === component.id)
         .map((candidate) => candidate.variant))
       return [component.id, VARIANTS.filter((variant) => !existing.has(variant))
-        .slice(0, this.#options.candidateCount)] as const
+        .slice(0, Math.max(1, Math.min(3, requestedCount)))] as const
     }))
     // Interleave by specialist round instead of exhausting one component first.
     // With a three-job concurrency cap, component-major ordering made the first

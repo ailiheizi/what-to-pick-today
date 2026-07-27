@@ -374,6 +374,35 @@ test('candidate generation exposes the full team and starts every specialist at 
   ]))
 })
 
+test('default generation ships one lead candidate and expands two alternatives on demand', async () => {
+  const variants = []
+  const sse = (result) => `data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify(result) } }] })}\n\ndata: [DONE]\n\n`
+  const fetchImpl = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    const system = body.messages[0].content
+    if (system.includes('UI Draft Renderer')) return new Response(sse({ previewHtml: '<main>draft</main>' }))
+    const input = JSON.parse(body.messages[1].content)
+    variants.push(input.variant)
+    const file = input.outputSchema.files[0]
+    return new Response(sse({
+      previewHtml: '<main>ready</main>', files: [{ path: file.path, content: 'export default function View(){ return null }' }],
+      entryFile: file.path, previewProps: {}, notes: [],
+    }))
+  }
+  const session = new HarnessSession('做一个计数器', {
+    kimi: { apiKey: 'test', baseUrl: 'https://example.test/v1', model: 'test', codeModel: 'test', temperature: 0 },
+    fetchImpl, persist: false, runtime: { compile: async () => ({ ok: true }) },
+  })
+  await session.start()
+  await session.chooseVisualDirection({
+    id: 'test', name: 'Test', description: '',
+    visualDNA: { concept: 'test', mood: [], colors: {}, typography: {}, geometry: { radius: '24px', border: 'soft', density: 'normal' }, motion: { personality: 'spring', duration: '300ms', easing: 'ease' }, compositionRules: [] },
+  })
+  assert.deepEqual(variants, ['expressive'])
+  await session.generateCandidates(undefined, 2)
+  assert.deepEqual(variants, ['expressive', 'conservative', 'experimental'])
+})
+
 test('multi-component generation gives every slot a lead candidate before second variants', async () => {
   let releaseBuilders
   const builderGate = new Promise((resolve) => { releaseBuilders = resolve })

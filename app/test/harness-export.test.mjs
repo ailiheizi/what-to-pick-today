@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { transform } from '@babel/standalone'
 import { buildHarnessExportProject, serializeHarnessExportProject } from '../src/lib/harness/export.ts'
 
 function snapshot(overrides = {}) {
@@ -9,9 +10,10 @@ function snapshot(overrides = {}) {
     geometry: { radius: '28px', border: 'tonal', density: 'normal' },
     motion: { personality: 'spring', duration: '300ms', easing: 'ease-out' }, compositionRules: ['rounded'],
   }
-  const components = ['hero', 'features'].map((id) => ({
-    id, role: id, slot: id, width: 'fluid', inputs: [], outputs: [], dependencies: ['react', 'lucide-react'], designTokens: [],
-  }))
+  const components = [
+    { id: 'hero', role: 'hero', slot: 'hero', width: 'fluid', inputs: [], outputs: [{ name: 'metricSelected', payload: 'string' }], dependencies: ['react', 'lucide-react'], designTokens: [] },
+    { id: 'features', role: 'features', slot: 'features', width: 'fluid', inputs: [{ name: 'selectedMetric', type: 'string', required: false }], outputs: [], dependencies: ['react', 'lucide-react'], designTokens: [] },
+  ]
   const candidates = components.map((component, index) => ({
     id: `${component.id}-picked`, componentId: component.id, variant: 'expressive',
     files: [
@@ -36,7 +38,10 @@ test('export builds a runnable multi-file project from selected Harness artifact
   assert.deepEqual(project.selectedCandidates.map((item) => item.componentId), ['hero', 'features'])
   assert.match(project.files['src/App.tsx'], /import Selected1 from '.\/generated\/hero\/expressive'/)
   assert.match(project.files['src/App.tsx'], /import '.\/generated\/hero\/styles.css'/)
-  assert.match(project.files['src/App.tsx'], /<Component2 \{\.\.\.props2\} \/>/)
+  assert.match(project.files['src/App.tsx'], /useState<unknown>/)
+  assert.match(project.files['src/App.tsx'], /"metricSelected": \(\.\.\.args: unknown\[\]\)/)
+  assert.match(project.files['src/App.tsx'], /"selectedMetric": hero_metricSelected_0/)
+  assert.doesNotThrow(() => transform(project.files['src/App.tsx'], { filename: 'App.tsx', presets: ['react', 'typescript'] }))
   assert.match(project.files['src/index.css'], /--dna-primary: #6750a4/)
   assert.equal(JSON.parse(project.files['package.json']).dependencies['lucide-react'], '^0.562.0')
   assert.equal(JSON.parse(serializeHarnessExportProject(project)).files['src/generated/hero/expressive.tsx'], project.files['src/generated/hero/expressive.tsx'])

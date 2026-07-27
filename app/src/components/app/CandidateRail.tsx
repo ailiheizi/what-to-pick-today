@@ -11,9 +11,10 @@ import {
   Loader2,
   MousePointer2,
   Sparkles,
+  Plus,
   Zap,
 } from 'lucide-react'
-import { useStore, type CandidateState } from '../../lib/store'
+import { getActiveHarness, useStore, type CandidateState } from '../../lib/store'
 import { playClick, playTick } from '../../lib/sound'
 import { PlayfulLoader } from './playful'
 import GeneratedCandidatePreview from './GeneratedCandidatePreview'
@@ -354,12 +355,18 @@ type RailClock = { now: number; startedAt: Record<string, number>; settledAt: Re
 const EMPTY_CLOCK: RailClock = { now: 0, startedAt: {}, settledAt: {} }
 
 export default function CandidateRail() {
-  const { slots, activeSlotId, setActiveSlot, tryOn, confirmCandidate, rerollCandidate, phase, directionId, harnessMode } = useStore()
+  const { slots, activeSlotId, setActiveSlot, tryOn, confirmCandidate, rerollCandidate, expandCandidates, phase, directionId, harnessMode } = useStore()
   const cssVariables = getDirection(directionId ?? 'apple').vars
   const scrollRef = useRef<HTMLDivElement>(null)
   const lastIdx = useRef(-1)
 
   const activeSlot = slots.find((s) => s.def.id === activeSlotId) ?? slots.find((s) => s.status !== 'selected') ?? null
+  const canExpandActive = harnessMode === 'kimi'
+    && getActiveHarness()?.phase === 'selecting'
+    && Boolean(activeSlot)
+    && activeSlot!.status !== 'selected'
+    && activeSlot!.candidates.length > 0
+    && activeSlot!.candidates.length < 3
 
   // 计时口径覆盖所有槽位：切换槽位时后台候选的耗时不会被清零重来。
   const allCandidates = slots.flatMap((s) => s.candidates)
@@ -441,7 +448,7 @@ export default function CandidateRail() {
         <div className="mt-1.5 text-[10px] leading-relaxed text-neutral-400">
           生成开始后，这里会实时出现
           <br />
-          {harnessMode === 'kimi' ? '确认蓝图后，每个槽位生成 3 个候选。' : '每个槽位的 3 个候选。'}
+          {harnessMode === 'kimi' ? '每个槽位先出 1 个主推，需要时再补两个。' : '每个槽位的 3 个候选。'}
           <br />
           滚动试穿，点击扣合 🧩
         </div>
@@ -513,6 +520,15 @@ export default function CandidateRail() {
       </div>
 
       <div className="px-4 py-2.5 text-[9px] text-neutral-400 leading-relaxed">
+        {canExpandActive && activeSlot && (
+          <button
+            type="button"
+            onClick={() => expandCandidates(activeSlot.def.id)}
+            className="mb-2 flex w-full items-center justify-center gap-1.5 rounded-full bg-violet-100 px-3 py-2 text-[10px] font-extrabold text-violet-700 transition hover:bg-violet-200 hover:scale-[1.02]"
+          >
+            <Plus size={11} /> 再来两个方案
+          </button>
+        )}
         滚动或点击卡片即「试穿」；扣合后仍可随时试穿其他候选并「替换」✨
       </div>
     </aside>

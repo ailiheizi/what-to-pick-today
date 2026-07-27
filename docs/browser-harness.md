@@ -179,7 +179,7 @@ import { HarnessSession, loadKimiSettings } from '@/lib/harness'
 const session = new HarnessSession('做一个活泼的 AI 工具落地页', {
   kimi: loadKimiSettings(),
   concurrency: 4,
-  candidateCount: 3,
+  candidateCount: 1,
 })
 
 session.subscribe((envelope) => {
@@ -231,9 +231,9 @@ TODO：确定 `.dna-*` 语义层要不要覆盖沙箱内的生成组件。若要
 `relume-openui-blueprint-research.md` 建议首轮每个槽位只生成 1 个候选，不自动补齐三个（该文 §3.2）。代码里两处说法也不一致：
 
 - `types.ts:205` 的注释写「首屏推荐 1，后续按需补齐」。
-- `store.ts` 实际用 `candidateCount: 3` 构造 `HarnessSession`；`session.ts` 的默认值同样是 3（`options.candidateCount ?? 3`）。
+- `store.ts` 与 `session.ts` 默认都使用 `candidateCount: 1`：首轮每个槽位只生成 Motion 主推。用户在候选轨点击“再来两个方案”后，才为该槽位按需生成 Product 与 Explorer；已确认槽位不会继续消耗请求。
 
-早期版本靠波次执行压首轮调用量，但后续 Agent 会静置数十秒。当前保留每槽位 3 个候选：三槽位页面 = 9 个候选 × 2 条流 = 最多 18 条模型流（受 `MAX_CONCURRENT_AGENT_JOBS` 限流，总量不变）。
+早期版本靠波次执行压首轮调用量，但仍会自动花完每槽位 3 个候选的总成本。现在三槽位页面首轮只生成 3 个候选 × 2 条流；只有用户明确要求比较的槽位才再增加最多 2 个候选，且仍受 `MAX_CONCURRENT_AGENT_JOBS` 限流。
 
 成本控制由页面蓝图确认负责：Planner 完成后先展示槽位、输入、输出、依赖、候选数与预计模型流，用户确认后才进入 Visual DNA 选择。调度顺序按 specialist round 交错，确保每个槽位先获得 Motion 候选，再补 Product、Explorer，避免第一个槽位独占并发。
 

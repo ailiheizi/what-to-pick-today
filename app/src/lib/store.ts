@@ -7,10 +7,10 @@ import { matchScenario } from './scenarios'
 import { fakeSource } from './fakecode'
 import { DIRECTIONS, getDirection } from './dna'
 import * as sfx from './sound'
-import { HarnessSession, SandboxRuntimeAdapter, hasKimiApiKey, loadKimiSettings } from './harness/index.ts'
+import { HarnessSession, SandboxRuntimeAdapter, harnessStorage, hasKimiApiKey, loadKimiSettings } from './harness/index.ts'
 import { classifyError } from './harness/errors.ts'
 import type { ErrorKind, ErrorSurface, ErrorVerdict } from './harness/errors.ts'
-import type { CandidateArtifact, EventEnvelope, PagePlan, VisualDirection } from './harness/types.ts'
+import type { CandidateArtifact, EventEnvelope, HarnessSnapshot, PagePlan, VisualDirection } from './harness/types.ts'
 
 export type Phase = 'idle' | 'planning' | 'blueprint' | 'direction' | 'generating' | 'reviewing' | 'done'
 export type CandStatus = 'queued' | 'streaming' | 'compiling' | 'rendered' | 'failed'
@@ -152,10 +152,13 @@ interface Store {
    */
   harnessError: HarnessError | null
   settingsOpen: boolean
+  recentProjects: HarnessSnapshot[]
   openSettings: () => void
   closeSettings: () => void
   openStar: () => void
   closeStar: () => void
+  refreshRecentProjects: () => Promise<void>
+  restoreProject: (sessionId: string) => Promise<void>
 
   submitPrompt: (text: string) => void
   confirmBlueprint: () => void
@@ -168,6 +171,7 @@ interface Store {
   stopGeneration: () => void
   regenerate: () => void
   rerollCandidate: (slotId: string, candId: string) => void
+  expandCandidates: (slotId: string) => void
   reportCandidateRuntimeError: (slotId: string, candId: string, attemptId: string | undefined, error: string) => void
   sendFollowUp: (text: string) => void
   toggleMute: () => void
@@ -764,10 +768,69 @@ export const useStore = create<Store>((set, get) => {
     harnessMode: 'demo',
     harnessError: null,
     settingsOpen: false,
+    recentProjects: [],
     openSettings: () => set({ settingsOpen: true }),
     closeSettings: () => set({ settingsOpen: false }),
     openStar: () => set({ starOpen: true }),
     closeStar: () => set({ starOpen: false }),
+    refreshRecentProjects: async () => {
+      try {
+        set({ recentProjects: (await harnessStorage.list()).slice(0, 5) })
+      } catch {
+        set({ recentProjects: [] })
+      }
+    },
+    restoreProject: async (sessionId) => {
+      clearTimers()
+      activeHarness?.cancel()
+      unsubscribeHarness?.()
+      const runtime = new SandboxRuntimeAdapter({ getCssVariables: () => getDirection(get().directionId ?? 'apple').vars })
+      const session = await HarnessSession.restore(sessionId, { kimi: loadKimiSettings(), concurrency: 4, candidateCount: 1, runtime })
+      const snapshot = await harnessStorage.load(sessionId)
+      if (!snapshot?.plan) throw new Error('这个项目还没有可恢复的页面蓝图')
+      const scenario = scenarioFromPlan(snapshot.plan)
+      const byComponent = new Map<string, CandidateArtifact[]>()
+      for (const artifact of snapshot.candidates) {
+        const list = byComponent.get(artifact.componentId) ?? []
+        list.push(artifact)
+        byComponent.set(artifact.componentId, list)
+      }
+      const slots: SlotState[] = scenario.slots.map((def) => {
+        const selectedId = snapshot.selections[def.id]
+        const candidates = (byComponent.get(def.id) ?? []).map((artifact) => ({
+          def: {
+            id: artifact.id,
+            label: `${artifact.agent?.name ?? 'AI Agent'} · ${artifact.variant}`,
+            style: artifact.variant,
+            blurb: artifact.notes[0] ?? '已从本地项目恢复',
+            Component: EmptyGeneratedComponent,
+          },
+          status: artifact.runtimeStatus === 'rendered' ? 'rendered' as const : artifact.runtimeStatus === 'compile_failed' ? 'failed' as const : 'compiling' as const,
+          code: artifact.files.map((file) => file.content).join('\n'), progress: artifact.files.reduce((sum, file) => sum + file.content.length, 0),
+          streamMs: 0, anim: randAnim(), seed: randSeed(), artifact,
+          error: artifact.compileErrors[0],
+        }))
+        return {
+          def, candidates, selectedId, tryOnId: selectedId ?? candidates.find((candidate) => candidate.status === 'rendered')?.def.id,
+          status: selectedId ? 'selected' as const : candidates.some((candidate) => candidate.status === 'rendered') ? 'ready' as const : 'planned' as const,
+        }
+      })
+      activeHarness = session
+      const lastSequence = snapshot.events.at(-1)?.sequence ?? 0
+      unsubscribeHarness = session.subscribe((event) => {
+        if (activeHarness === session) handleHarnessEvent(event)
+      }, lastSequence)
+      const interrupted = ['planning', 'generating', 'reviewing'].includes(snapshot.phase)
+      set({
+        prompt: snapshot.requirement, scenario, slots, directionId: snapshot.direction?.id ?? null,
+        activeSlotId: slots.find((slot) => slot.status !== 'selected')?.def.id ?? slots[0]?.def.id ?? null,
+        phase: snapshot.direction ? (snapshot.phase === 'complete' ? 'done' : 'generating') : 'blueprint',
+        harnessMode: 'kimi', harnessError: null, stopped: interrupted,
+        chat: [{ id: uid++, role: 'sys', text: interrupted ? '已恢复本地项目。上次网络生成已中断，可继续补齐候选。' : '已恢复本地项目。', ts: now() }],
+        history: [{ id: uid++, kind: 'sys', label: '恢复本地项目', ts: now() }],
+        reviewSteps: snapshot.review ? [{ text: `✓ ${snapshot.review.summary}` }] : [],
+      })
+    },
 
     submitPrompt: (text) => {
       if (hasKimiApiKey()) {
@@ -784,7 +847,7 @@ export const useStore = create<Store>((set, get) => {
         pushChat('ai', '收到。真实 Planner 正在分析需求、拆分组件合同和页面槽位…')
         pushHistory('plan', 'AI Planner 收到需求')
         const runtime = new SandboxRuntimeAdapter({ getCssVariables: () => getDirection(get().directionId ?? 'apple').vars })
-        const session = new HarnessSession(text, { kimi: loadKimiSettings(), concurrency: 4, candidateCount: 3, runtime })
+        const session = new HarnessSession(text, { kimi: loadKimiSettings(), concurrency: 4, candidateCount: 1, runtime })
         activeHarness = session
         unsubscribeHarness = session.subscribe((event) => {
           if (activeHarness === session) handleHarnessEvent(event)
@@ -841,11 +904,11 @@ export const useStore = create<Store>((set, get) => {
     confirmBlueprint: () => {
       const state = get()
       if (state.phase !== 'blueprint' || !state.scenario) return
-      const candidateCount = state.scenario.slots.length * 3
+      const candidateCount = state.scenario.slots.length
       const streamCount = candidateCount * 2
       set({ phase: 'direction' })
       pushHistory('plan', `确认页面蓝图 · ${state.scenario.slots.length} 个槽位 · 最多 ${streamCount} 条模型流`)
-      pushChat('ai', `蓝图已确认。下一步选择视觉底板；选择后将生成 ${candidateCount} 个候选，最多打开 ${streamCount} 条模型流（并发受限）。`)
+      pushChat('ai', `蓝图已确认。下一步选择视觉底板；首轮每个槽位先生成 1 个主推，共 ${candidateCount} 个候选、最多 ${streamCount} 条模型流。需要比较时再按槽位补齐。`)
       sfx.playConfirm()
     },
 
@@ -857,7 +920,7 @@ export const useStore = create<Store>((set, get) => {
         const session = activeHarness
         set({ directionId: id, phase: 'generating', stopped: false })
         pushHistory('direction', `选定视觉底板 · 分支「${dir.name}」`)
-        pushChat('ai', `底板「${dir.name}」已锁定。Motion、Product、Explorer 三位 Agent 已进场；候选卡会立即出现，主推方案优先生成，其余方案渐进补齐。`)
+        pushChat('ai', `底板「${dir.name}」已锁定。Motion Agent 先为每个槽位生成一个主推；可以立刻选择，也可以按槽位再叫 Product 与 Explorer 补两个方案。`)
         sfx.playStart()
         void session.chooseVisualDirection(harnessDirection(id)).catch((reason: unknown) => {
           if (activeHarness !== session) return
@@ -1001,6 +1064,21 @@ export const useStore = create<Store>((set, get) => {
         if (activeHarness !== session) return
         reportFailure(reason, '候选重新生成失败')
         set({ phase: 'generating' })
+      })
+    },
+
+    expandCandidates: (slotId) => {
+      const state = get()
+      const slot = state.slots.find((item) => item.def.id === slotId)
+      if (!slot || slot.status === 'selected' || slot.candidates.length >= 3 || state.harnessMode !== 'kimi' || !activeHarness) return
+      const session = activeHarness
+      const missing = Math.min(2, 3 - slot.candidates.length)
+      set({ phase: 'generating', stopped: false, harnessError: null })
+      pushHistory('sys', `补齐候选 · ${slot.def.role} · +${missing}`)
+      pushChat('ai', `${slot.def.role} 的主推已保留，Product 与 Explorer 正在补充更稳妥和更实验的比较方案。`)
+      void session.generateCandidates([slotId], missing).catch((reason: unknown) => {
+        if (activeHarness !== session) return
+        reportFailure(reason, '补齐候选失败')
       })
     },
 

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowRight, Check, Coins, Link2, MousePointerClick, PartyPopper, ScanSearch, Wand2 } from 'lucide-react'
+import { ArrowRight, Check, Clock3, Coins, Link2, MousePointerClick, PartyPopper, ScanSearch, Wand2 } from 'lucide-react'
 import { useStore, type SlotState } from '../../lib/store'
 import type { Scenario, SlotDef } from '../../candidates/types'
 import { DIRECTIONS, getDirection } from '../../lib/dna'
 import { EXAMPLE_PROMPTS } from '../../lib/scenarios'
+import { inferSemanticBindings, signalName } from '../../lib/harness/bindings'
 import { ConfettiBurst, ConfettiRain, FloatingEmojis, PlayfulLoader } from './playful'
 import GeneratedCandidatePreview from './GeneratedCandidatePreview'
 import StreamingHtmlPreview from './StreamingHtmlPreview'
@@ -11,6 +12,8 @@ import StreamingHtmlPreview from './StreamingHtmlPreview'
 /* ---------------- 空状态：产品自我介绍 ---------------- */
 
 function Welcome({ onPick }: { onPick: (p: string) => void }) {
+  const { recentProjects, refreshRecentProjects, restoreProject } = useStore()
+  useEffect(() => { void refreshRecentProjects() }, [refreshRecentProjects])
   return (
     <div className="relative h-full flex flex-col items-center justify-center px-5 md:px-8 text-center overflow-hidden">
       <FloatingEmojis />
@@ -42,6 +45,22 @@ function Welcome({ onPick }: { onPick: (p: string) => void }) {
           </button>
         ))}
       </div>
+      {recentProjects.length > 0 && (
+        <div className="anim-pop mt-6 w-full max-w-2xl rounded-[24px] border border-white/70 bg-white/65 p-3 text-left shadow-lg backdrop-blur-xl">
+          <div className="mb-2 flex items-center gap-1.5 px-1 text-[10px] font-extrabold text-neutral-500"><Clock3 size={12} /> 最近项目</div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {recentProjects.slice(0, 4).map((project) => (
+              <button key={project.sessionId} type="button" onClick={() => void restoreProject(project.sessionId)} className="hover-pop rounded-2xl border border-neutral-200/70 bg-white/80 px-3 py-2.5 text-left hover:border-violet-300 hover:shadow-md">
+                <div className="truncate text-[11px] font-extrabold text-neutral-800">{project.plan?.project.name ?? project.requirement}</div>
+                <div className="mt-1 flex items-center justify-between gap-2 text-[8px] text-neutral-400">
+                  <span>{project.plan?.components.length ?? 0} 个槽位 · {project.candidates.length} 个候选</span>
+                  <span>{new Date(project.updatedAt).toLocaleDateString('zh-CN')}</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="mt-10 md:mt-12 grid grid-cols-3 gap-4 md:gap-8 text-[10px] text-neutral-500">
         {[
           ['3–6', '并发组件任务', 'anim-float'],
@@ -110,43 +129,18 @@ type BlueprintBinding = {
   mode: 'signal' | 'context'
 }
 
-const GENERIC_SIGNAL_TOKENS = new Set(['on', 'change', 'changed', 'select', 'selected', 'value', 'data', 'id', 'string', 'array', 'object', 'number', 'boolean'])
-
-function signalName(value: string) {
-  return value.split(/[:(]/, 1)[0].trim()
-}
-
-function signalTokens(value: string) {
-  return signalName(value)
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .toLowerCase()
-    .split(/[^a-z0-9\u4e00-\u9fff]+/)
-    .filter((token) => token.length > 1 && !GENERIC_SIGNAL_TOKENS.has(token))
-}
-
 function inferBlueprintBindings(slots: SlotDef[]): BlueprintBinding[] {
-  const bindings: BlueprintBinding[] = []
-  for (const from of slots) {
-    for (const output of from.outputs) {
-      const outputTokens = signalTokens(output)
-      if (outputTokens.length === 0) continue
-      const matches: Array<{ to: SlotDef; score: number }> = []
-      for (const to of slots) {
-        if (to.id === from.id) continue
-        const score = Math.max(0, ...to.inputs.map((input) => {
-          const inputTokens = signalTokens(input)
-          return outputTokens.filter((token) => inputTokens.includes(token)).length
-        }))
-        if (score > 0) matches.push({ to, score })
-      }
-      matches.sort((a, b) => b.score - a.score)
-      for (const match of matches) {
-        if (!bindings.some((binding) => binding.from.id === from.id && binding.to.id === match.to.id)) {
-          bindings.push({ from, to: match.to, signal: signalName(output), mode: 'signal' })
-        }
-      }
-    }
-  }
+  const byId = new Map(slots.map((slot) => [slot.id, slot]))
+  const contracts = slots.map((slot) => ({
+    id: slot.id, role: slot.role, slot: slot.id, width: slot.width,
+    inputs: slot.inputs.map((input) => ({ name: signalName(input), type: 'unknown', required: false })),
+    outputs: slot.outputs.map((output) => ({ name: signalName(output), payload: 'unknown' })),
+    dependencies: slot.dependencies, designTokens: [],
+  }))
+  const bindings = inferSemanticBindings(contracts).flatMap((binding) => binding.targets.map((target) => ({
+    from: byId.get(binding.fromComponentId)!, to: byId.get(target.componentId)!,
+    signal: binding.outputName, mode: 'signal' as const,
+  }))).filter((binding) => binding.from && binding.to)
   if (bindings.length > 0) return bindings.slice(0, 4)
 
   // Some otherwise valid planners return display-only contracts. The page is
@@ -350,7 +344,7 @@ function BlueprintView() {
   const focusedSlotId = activeSlotId || scenario.slots[0]?.id || ''
   const candidateCount = scenario.slots.length * 3
   const streamCount = candidateCount * 2
-  const firstWaveCandidates = Math.min(scenario.slots.length, 3)
+  const firstWaveCandidates = scenario.slots.length
   const firstWaveStreams = firstWaveCandidates * 2
   return (
     <div className="h-full overflow-y-auto px-6 py-8">

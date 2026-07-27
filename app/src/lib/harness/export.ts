@@ -1,4 +1,5 @@
 import type { CandidateArtifact, HarnessSnapshot, VisualDNA } from './types.ts'
+import { inferSemanticBindings } from './bindings.ts'
 
 export type HarnessExportOptions = {
   /** 默认要求每个规划组件都已经选择。 */
@@ -119,7 +120,23 @@ function selectedArtifacts(snapshot: HarnessSnapshot, options: Required<Pick<Har
   return selected
 }
 
-function appSource(selected: CandidateArtifact[]) {
+function safeIdentifier(value: string, fallback: string) {
+  const identifier = value.replace(/[^a-zA-Z0-9_$]/g, '_')
+  return /^[a-zA-Z_$]/.test(identifier) ? identifier : `${fallback}_${identifier}`
+}
+
+function appSource(snapshot: HarnessSnapshot, selected: CandidateArtifact[]) {
+  const plan = snapshot.plan!
+  const selectedByComponent = new Map(selected.map((candidate) => [candidate.componentId, candidate]))
+  const pageSlots = plan.pages.flatMap((page) => page.slots)
+  const ordered = [
+    ...pageSlots.map((slot) => selectedByComponent.get(slot)).filter((candidate): candidate is CandidateArtifact => Boolean(candidate)),
+    ...selected.filter((candidate) => !pageSlots.includes(candidate.componentId)),
+  ]
+  const bindings = inferSemanticBindings(plan.components)
+    .filter((binding) => selectedByComponent.has(binding.fromComponentId))
+    .map((binding) => ({ ...binding, targets: binding.targets.filter((target) => selectedByComponent.has(target.componentId)) }))
+    .filter((binding) => binding.targets.length)
   const imports = selected.map((candidate, index) =>
     `import Selected${index + 1} from '${importPath('src/App.tsx', candidate.entryFile)}'`,
   )
@@ -132,10 +149,37 @@ function appSource(selected: CandidateArtifact[]) {
   const components = selected.map((_candidate, index) =>
     `const Component${index + 1} = Selected${index + 1} as unknown as ComponentType<Record<string, unknown>>`,
   )
-  const sections = selected.map((candidate, index) => `      <section data-component-id=${JSON.stringify(candidate.componentId)}>
-        <Component${index + 1} {...props${index + 1}} />
-      </section>`)
-  return `import type { ComponentType } from 'react'
+  const selectedIndex = new Map(selected.map((candidate, index) => [candidate.componentId, index + 1]))
+  const stateNames = bindings.map((binding, index) => ({
+    binding,
+    name: safeIdentifier(`${binding.fromComponentId}_${binding.outputName}_${index}`, 'signal'),
+  }))
+  const states = stateNames.map(({ binding, name }) => {
+    const initial = binding.targets
+      .map((target) => selectedByComponent.get(target.componentId)?.previewProps[target.inputName])
+      .find((value) => value !== undefined)
+    return `  const [${name}, set_${name}] = useState<unknown>(${jsonLiteral(initial ?? null)})`
+  })
+  const overrides = new Map<string, string[]>()
+  for (const { binding, name } of stateNames) {
+    const source = overrides.get(binding.fromComponentId) ?? []
+    source.push(`${JSON.stringify(binding.outputName)}: (...args: unknown[]) => set_${name}(args.length <= 1 ? args[0] : args)`)
+    overrides.set(binding.fromComponentId, source)
+    for (const target of binding.targets) {
+      const targetProps = overrides.get(target.componentId) ?? []
+      targetProps.push(`${JSON.stringify(target.inputName)}: ${name}`)
+      overrides.set(target.componentId, targetProps)
+    }
+  }
+  const sections = ordered.map((candidate) => {
+    const index = selectedIndex.get(candidate.componentId)!
+    const linkedProps = overrides.get(candidate.componentId) ?? []
+    const propsExpression = linkedProps.length ? `{...props${index}, ${linkedProps.join(', ')}}` : `props${index}`
+    return `      <section data-component-id=${JSON.stringify(candidate.componentId)}>
+        <Component${index} {...${propsExpression}} />
+      </section>`
+  })
+  return `import { useState, type ComponentType } from 'react'
 ${imports.join('\n')}
 ${cssImports.join('\n')}
 import './index.css'
@@ -144,6 +188,7 @@ ${props.join('\n')}
 ${components.join('\n')}
 
 export default function App() {
+${states.join('\n')}
   return (
     <main data-generated-by="what-to-pick-today">
 ${sections.join('\n')}
@@ -194,7 +239,7 @@ export function buildHarnessExportProject(
     return [name, version]
   }))
   const scaffold: Record<string, string> = {
-    'src/App.tsx': appSource(selected),
+    'src/App.tsx': appSource(snapshot, selected),
     'src/main.tsx': "import { StrictMode } from 'react'\nimport { createRoot } from 'react-dom/client'\nimport App from './App'\n\ncreateRoot(document.getElementById('root')!).render(<StrictMode><App /></StrictMode>)\n",
     'src/index.css': `@tailwind base;\n@tailwind components;\n@tailwind utilities;\n\n${visualDnaCss(direction.visualDNA)}`,
     'index.html': '<!doctype html>\n<html lang="zh-CN"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /><title>Generated project</title></head><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>\n',
