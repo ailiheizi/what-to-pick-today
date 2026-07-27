@@ -5,7 +5,7 @@ import type { Scenario, SlotDef } from '../../candidates/types'
 import { DIRECTIONS, getDirection } from '../../lib/dna'
 import { EXAMPLE_PROMPTS } from '../../lib/scenarios'
 import { inferSemanticBindings, signalName } from '../../lib/harness/bindings'
-import { ConfettiBurst, ConfettiRain, FloatingEmojis, PlayfulLoader } from './playful'
+import { ConfettiBurst, ConfettiRain, FloatingEmojis } from './playful'
 import GeneratedCandidatePreview from './GeneratedCandidatePreview'
 import StreamingHtmlPreview from './StreamingHtmlPreview'
 
@@ -80,41 +80,57 @@ function Welcome({ onPick }: { onPick: (p: string) => void }) {
 /* ---------------- Planner 规划视图 ---------------- */
 
 function PlanView() {
-  const { planNotes, scenario, phase } = useStore()
+  const { planNotes, scenario, phase, prompt, startedAt } = useStore()
+  const [elapsed, setElapsed] = useState(() => Math.max(0, Date.now() - startedAt))
+  useEffect(() => {
+    if (phase !== 'planning') return
+    const tick = window.setInterval(() => setElapsed(Math.max(0, Date.now() - startedAt)), 250)
+    return () => window.clearInterval(tick)
+  }, [phase, startedAt])
+  const seconds = elapsed / 1000
+  const stages = [
+    { label: '理解需求', detail: prompt ? `已收到 ${prompt.length} 个字符` : '读取用户目标', doneAt: 0.4 },
+    { label: '拆分页面', detail: '推断可独立挑选的槽位', doneAt: 2.2 },
+    { label: '定义接口', detail: '连接组件输入与输出', doneAt: 4.8 },
+    { label: '生成方向', detail: '准备 Visual DNA 候选', doneAt: 7.5 },
+  ]
   return (
-    <div className="h-full flex items-center justify-center px-8">
-      <div className="w-full max-w-lg rounded-3xl border border-white/60 bg-white/75 backdrop-blur-xl shadow-xl p-6 anim-pop">
-        <div className="flex items-center gap-2 text-xs font-bold text-neutral-600">
-          <span className="text-base anim-float inline-block">🧠</span> Planner · 正在规划页面结构
+    <div className="h-full overflow-y-auto px-6 py-8">
+      <div className="anim-frame-in mx-auto grid w-full max-w-4xl gap-4 lg:grid-cols-[0.82fr_1.18fr]">
+        <div className="rounded-[28px] border border-white/60 bg-white/80 p-6 shadow-xl backdrop-blur-xl">
+          <div className="flex items-center justify-between gap-3 text-xs font-bold text-neutral-600">
+            <span className="flex items-center gap-2"><span className="text-base anim-float inline-block">🧠</span> Planner · 正在规划</span>
+            <span className="rounded-full bg-emerald-100 px-2 py-1 font-mono text-[9px] text-emerald-700">{seconds.toFixed(1)}s</span>
+          </div>
+          <div className="mt-5 space-y-3">
+            {stages.map((stage, index) => {
+              const done = seconds >= stage.doneAt
+              const active = !done && (index === 0 || seconds >= stages[index - 1].doneAt)
+              return (
+                <div key={stage.label} className={`flex items-center gap-3 rounded-2xl border px-3 py-2.5 transition-all ${done ? 'border-emerald-100 bg-emerald-50/70' : active ? 'border-violet-200 bg-violet-50 shadow-sm' : 'border-neutral-100 bg-white/50 opacity-55'}`}>
+                  <span className={`flex size-6 items-center justify-center rounded-full text-[10px] font-black ${done ? 'bg-emerald-500 text-white' : active ? 'bg-violet-600 text-white animate-pulse' : 'bg-neutral-100 text-neutral-400'}`}>{done ? '✓' : index + 1}</span>
+                  <div><div className="text-[11px] font-extrabold text-neutral-700">{stage.label}</div><div className="text-[8px] text-neutral-400">{stage.detail}</div></div>
+                </div>
+              )
+            })}
+          </div>
+          {seconds > 8 && <div className="mt-4 rounded-2xl bg-amber-50 px-3 py-2 text-[9px] leading-relaxed text-amber-700">模型正在校验结构化输出；页面框架已经在右侧预绘，不需要盯着空白等待。</div>}
         </div>
-        <div className="mt-4 space-y-2.5">
-          {planNotes.map((n, i) => (
-            <div key={i} className="anim-slide-l flex items-start gap-2 text-[13px] text-neutral-700">
-              <span className="shrink-0 w-[18px] h-[18px] rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center text-[10px] mt-0.5">
-                ✓
-              </span>
-              {n}
+        <div className="relative min-h-[420px] overflow-hidden rounded-[28px] border border-white/60 bg-white/65 p-5 shadow-xl backdrop-blur-xl">
+          <div className="flex items-center justify-between"><div><div className="text-[10px] font-black text-neutral-700">即时页面轮廓</div><div className="mt-0.5 text-[8px] text-neutral-400">本地预绘 · 不等待模型返回</div></div><span className="rounded-full bg-violet-100 px-2 py-1 text-[8px] font-bold text-violet-700">实时细化中</span></div>
+          <div className="mt-4 space-y-3 rounded-3xl border border-neutral-200/70 bg-gradient-to-br from-violet-50/80 via-white to-amber-50/70 p-4">
+            <div className="flex items-center gap-2 rounded-2xl border border-white bg-white/70 px-3 py-2"><i className="size-5 rounded-lg bg-neutral-800/80" /><i className="h-2 w-20 rounded-full bg-neutral-300" /><div className="ml-auto flex gap-2">{[24, 32, 22].map((width) => <i key={width} className="h-2 rounded-full bg-neutral-200" style={{ width }} />)}</div></div>
+            <div className="grid grid-cols-3 gap-2">{[0, 1, 2].map((item) => <div key={item} className="h-20 rounded-2xl border border-white bg-white/70 p-3"><i className="block h-2 w-1/2 rounded-full bg-neutral-200" /><i className="mt-4 block h-5 w-3/4 rounded-lg bg-violet-200/80" /></div>)}</div>
+            <div className="flex h-36 items-end gap-2 rounded-2xl border border-white bg-white/70 px-4 pb-4 pt-8">{[42, 66, 54, 82, 63, 92, 70, 80].map((height, index) => <i key={index} className="flex-1 rounded-t-lg bg-gradient-to-t from-violet-300 to-fuchsia-200" style={{ height: `${height}%`, animation: `pulse 1.5s ${index * 80}ms ease-in-out infinite alternate` }} />)}</div>
+            <div className="space-y-2 rounded-2xl border border-white bg-white/70 p-3">{[0, 1, 2].map((item) => <div key={item} className="flex items-center gap-3"><i className="size-6 rounded-full bg-neutral-200" /><i className="h-2 flex-1 rounded-full bg-neutral-200" /><i className="h-2 w-16 rounded-full bg-amber-200" /></div>)}</div>
+          </div>
+          {planNotes.length > 0 && <div className="absolute inset-x-5 bottom-5 flex flex-wrap gap-1.5">{planNotes.slice(-3).map((note, index) => <span key={`${note}-${index}`} className="anim-pop rounded-full border border-white bg-neutral-900/80 px-2.5 py-1 text-[8px] font-bold text-white shadow backdrop-blur">✓ {note}</span>)}</div>}
+          {scenario && planNotes.length >= 2 && (
+            <div className="absolute inset-x-5 bottom-5 grid grid-cols-3 gap-2">
+              {scenario.slots.slice(0, 3).map((slot) => <div key={slot.id} className="rounded-xl bg-neutral-900/85 px-2 py-1.5 text-[8px] font-bold text-white shadow">{slot.role}</div>)}
             </div>
-          ))}
-          {phase === 'planning' && planNotes.length < (scenario?.plannerNotes.length ?? 0) && (
-            <PlayfulLoader seed={planNotes.length * 7919 + 13} />
           )}
         </div>
-        {scenario && planNotes.length >= 2 && (
-          <div className="mt-5 grid grid-cols-2 sm:grid-cols-3 gap-2">
-            {scenario.slots.map((s, i) => (
-              <div
-                key={s.id}
-                className="anim-bounce-in rounded-2xl border border-neutral-200/70 bg-white p-2.5"
-                style={{ animationDelay: `${i * 0.1}s` }}
-              >
-                <div className="text-[11px] font-bold text-neutral-800">{s.role}</div>
-                <div className="mt-1 text-[9px] font-mono text-neutral-400 truncate">in: {s.inputs.join(' · ')}</div>
-                <div className="text-[9px] font-mono text-neutral-400 truncate">out: {s.outputs.join(' · ') || '—'}</div>
-              </div>
-            ))}
-          </div>
-        )}
       </div>
     </div>
   )
@@ -537,6 +553,7 @@ function SlotShell({ slot }: { slot: SlotState }) {
 
   return (
     <div
+      data-canvas-slot={slot.def.id}
       onClick={() => setActiveSlot(slot.def.id)}
       className={`relative h-full flex flex-col ${selected && !tryingOther ? '' : isActive ? 'rounded-2xl ring-2 ring-neutral-900/60 ring-offset-2 ring-offset-[var(--dna-bg)]' : ''}`}
     >
@@ -731,7 +748,7 @@ function ReviewOverlayGate() {
 /* ---------------- 画布主体 ---------------- */
 
 export default function CanvasStage() {
-  const { phase, slots, directionId, scenario, tweaks, submitPrompt, bigConfetti, harnessMode } = useStore()
+  const { phase, slots, activeSlotId, directionId, scenario, tweaks, submitPrompt, bigConfetti, harnessMode } = useStore()
   const dir = getDirection(directionId ?? 'apple')
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -747,6 +764,16 @@ export default function CanvasStage() {
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: 0 })
   }, [phase])
+
+  useEffect(() => {
+    if (!activeSlotId || !['generating', 'reviewing', 'done'].includes(phase)) return
+    const timer = window.setTimeout(() => {
+      const target = [...(scrollRef.current?.querySelectorAll<HTMLElement>('[data-canvas-slot]') ?? [])]
+        .find((element) => element.dataset.canvasSlot === activeSlotId)
+      target?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' })
+    }, 80)
+    return () => window.clearTimeout(timer)
+  }, [activeSlotId, phase])
 
   const slotById = (id: string) => slots.find((s) => s.def.id === id)
   const gapCls = tweaks.density ? 'gap-4' : 'gap-5'

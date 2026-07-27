@@ -380,7 +380,7 @@ export const useStore = create<Store>((set, get) => {
   const handleHarnessEvent = (envelope: EventEnvelope) => {
     const event = envelope.event
     if (event.type === 'plan.activity') {
-      set((state) => ({ tokensStreamed: state.tokensStreamed + event.receivedChars }))
+      set((state) => ({ tokensStreamed: state.tokensStreamed + Math.ceil(event.receivedChars / 4) }))
       if (get().planNotes.length < 3) set((state) => ({ planNotes: [...state.planNotes, 'Planner 正在分析页面结构、槽位依赖与设计方向…'] }))
       return
     }
@@ -425,7 +425,7 @@ export const useStore = create<Store>((set, get) => {
     }
     if (event.type === 'component.activity') {
       patchCand(event.componentId, event.candidateId, (candidate) => ({ progress: candidate.progress + event.receivedChars }))
-      set((state) => ({ tokensStreamed: state.tokensStreamed + event.receivedChars }))
+      set((state) => ({ tokensStreamed: state.tokensStreamed + Math.ceil(event.receivedChars / 4) }))
       return
     }
     if (event.type === 'preview.updated') {
@@ -617,7 +617,7 @@ export const useStore = create<Store>((set, get) => {
         }
         const next = Math.min(total, c.progress + charsPerTick)
         patchCand(t.slotId, t.candId, () => ({ progress: next }))
-        set((s) => ({ tokensStreamed: s.tokensStreamed + charsPerTick }))
+        set((s) => ({ tokensStreamed: s.tokensStreamed + Math.ceil(charsPerTick / 4) }))
         if (next >= total) {
           clearInterval(iv)
           patchCand(t.slotId, t.candId, () => ({ status: 'compiling' }))
@@ -775,7 +775,7 @@ export const useStore = create<Store>((set, get) => {
     closeStar: () => set({ starOpen: false }),
     refreshRecentProjects: async () => {
       try {
-        set({ recentProjects: (await harnessStorage.list()).slice(0, 5) })
+        set({ recentProjects: (await harnessStorage.list()).filter((project) => project.plan && project.plan.components.length > 0).slice(0, 5) })
       } catch {
         set({ recentProjects: [] })
       }

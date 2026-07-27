@@ -53,7 +53,7 @@ export default function TopBar() {
         <span className={`w-2 h-2 rounded-full ${busy ? 'bg-emerald-500 animate-ping' : phase === 'done' ? 'bg-emerald-500' : 'bg-neutral-300'}`} />
         <span className="text-[11px] font-medium text-neutral-600">{PHASE_LABEL[phase]}</span>
         {tokensStreamed > 0 && phase !== 'idle' && (
-          <span className="text-[10px] font-mono text-neutral-400">· {tokensStreamed.toLocaleString()} tok</span>
+          <span className="text-[10px] font-mono text-neutral-400" title="根据流式字符数估算">· ≈{tokensStreamed.toLocaleString()} tok</span>
         )}
       </div>
 
