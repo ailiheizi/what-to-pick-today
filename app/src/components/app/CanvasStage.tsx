@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Check, MousePointerClick, PartyPopper, ScanSearch, Wand2 } from 'lucide-react'
+import { Check, Coins, MousePointerClick, PartyPopper, ScanSearch, Wand2 } from 'lucide-react'
 import { useStore, type SlotState } from '../../lib/store'
 import { DIRECTIONS, getDirection } from '../../lib/dna'
 import { EXAMPLE_PROMPTS } from '../../lib/scenarios'
@@ -100,6 +100,54 @@ function PlanView() {
   )
 }
 
+function BlueprintView() {
+  const { scenario, confirmBlueprint, harnessMode } = useStore()
+  if (!scenario) return null
+  const candidateCount = scenario.slots.length * 3
+  const streamCount = candidateCount * 2
+  return (
+    <div className="h-full overflow-y-auto px-6 py-8">
+      <div className="anim-pop mx-auto w-full max-w-3xl rounded-[28px] border border-white/70 bg-white/80 p-6 shadow-xl backdrop-blur-xl">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-neutral-400">Planner Blueprint</div>
+            <h2 className="mt-2 text-2xl font-black text-neutral-900">先确认页面怎么拆</h2>
+            <p className="mt-1 text-[11px] leading-relaxed text-neutral-500">确认前不会启动 Builder，也不会产生候选生成费用。</p>
+          </div>
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-right">
+            <div className="flex items-center justify-end gap-1 text-[10px] font-bold text-amber-700"><Coins size={12} /> 预计调用量</div>
+            <div className="mt-1 text-lg font-black text-amber-950">{candidateCount} 个候选</div>
+            <div className="text-[9px] text-amber-700">最多 {streamCount} 条模型流 · 并发受限</div>
+          </div>
+        </div>
+        <div className="mt-5 grid gap-3 sm:grid-cols-2">
+          {scenario.slots.map((slot, index) => (
+            <div key={slot.id} className="anim-slide-l rounded-2xl border border-neutral-200/80 bg-white p-4" style={{ animationDelay: `${index * 0.08}s` }}>
+              <div className="flex items-center gap-2">
+                <span className="flex size-6 items-center justify-center rounded-full bg-neutral-900 text-[10px] font-black text-white">{index + 1}</span>
+                <div className="text-[12px] font-extrabold text-neutral-800">{slot.role}</div>
+              </div>
+              <div className="mt-3 space-y-1 text-[9px] leading-relaxed text-neutral-500">
+                <div><span className="font-bold text-neutral-700">输入：</span>{slot.inputs.join(' · ') || '无外部输入'}</div>
+                <div><span className="font-bold text-neutral-700">输出：</span>{slot.outputs.join(' · ') || '仅展示'}</div>
+                <div><span className="font-bold text-neutral-700">依赖：</span>{slot.dependencies.join(' · ') || '独立槽位'}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="mt-5 flex flex-col items-center justify-between gap-3 rounded-2xl bg-neutral-950 px-4 py-3 text-white sm:flex-row">
+          <div className="text-[10px] leading-relaxed text-neutral-300">
+            {harnessMode === 'kimi' ? '确认后先选择 Visual DNA，再由 Motion / Product / Explorer 生成候选。' : '演示模式也遵循相同确认流程。'}
+          </div>
+          <button onClick={confirmBlueprint} className="hover-pop shrink-0 rounded-full bg-white px-5 py-2.5 text-[11px] font-black text-neutral-950 shadow-lg">
+            确认蓝图，选择风格 →
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /* ---------------- 风格底板挑选 ---------------- */
 
 function DirectionPicker() {
@@ -160,7 +208,7 @@ function DirectionPicker() {
 /* ---------------- 槽位外壳：随机加载 / 试穿 / 已确认 ---------------- */
 
 function SlotShell({ slot }: { slot: SlotState }) {
-  const { setActiveSlot, tryOn, activeSlotId, bursts } = useStore()
+  const { setActiveSlot, tryOn, reportCandidateRuntimeError, activeSlotId, bursts } = useStore()
   // 试穿优先：即使已扣合，试穿其他候选也即时预览（不替换已确认内容）
   const activeCand = slot.candidates.find((c) => c.def.id === (slot.tryOnId ?? slot.selectedId))
   const streaming = slot.candidates.find((c) => c.status === 'streaming' || c.status === 'compiling')
@@ -206,20 +254,31 @@ function SlotShell({ slot }: { slot: SlotState }) {
         </span>
       </div>
 
-      {activeCand && activeCand.status === 'rendered' ? (
+      {activeCand && (activeCand.status === 'rendered' || activeCand.lastGoodArtifact) ? (
         <div key={activeCand.def.id + String(selected && !tryingOther)} className={`relative h-full flex-1 ${selected && !tryingOther ? 'anim-snap' : activeCand.anim}`}>
-          {activeCand.artifact ? (
+          {activeCand.artifact || activeCand.lastGoodArtifact ? (
             <GeneratedCandidatePreview
-              candidate={activeCand.artifact}
+              candidate={activeCand.status === 'rendered' ? activeCand.artifact! : activeCand.lastGoodArtifact!}
               cssVariables={getDirection(useStore.getState().directionId ?? 'apple').vars}
               selection={{ slotId: slot.def.id, candidateId: activeCand.def.id }}
               onSelect={({ slotId, candidateId }) => {
                 setActiveSlot(slotId)
                 tryOn(slotId, candidateId)
               }}
+              onRuntimeError={(error) => reportCandidateRuntimeError(
+                slot.def.id,
+                activeCand.def.id,
+                activeCand.artifact?.attemptId,
+                error,
+              )}
             />
           ) : (
             <activeCand.def.Component />
+          )}
+          {activeCand.status !== 'rendered' && activeCand.lastGoodArtifact && (
+            <div className="absolute inset-x-3 bottom-3 rounded-2xl border border-amber-200 bg-amber-50/95 px-3 py-2 text-center text-[9px] font-bold text-amber-800 shadow-lg backdrop-blur">
+              {activeCand.status === 'failed' ? '运行时修复失败 · 已保留上一帧，不能导出' : '运行时错误正在修复 · 已保留上一帧'}
+            </div>
           )}
           {tryingOther ? (
             <div className="anim-pop absolute top-2 right-2 px-2 py-0.5 rounded-full bg-amber-400 text-amber-950 text-[9px] font-bold backdrop-blur">
@@ -379,6 +438,7 @@ export default function CanvasStage() {
       <div ref={scrollRef} className="absolute inset-0 overflow-y-auto rounded-3xl">
         {phase === 'idle' && <Welcome onPick={submitPrompt} />}
         {(phase === 'planning' || (phase === 'direction' && !scenario)) && <PlanView />}
+        {phase === 'blueprint' && scenario && <BlueprintView />}
         {phase === 'direction' && scenario && <DirectionPicker />}
 
         {(phase === 'generating' || phase === 'reviewing' || phase === 'done') && scenario && (

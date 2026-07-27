@@ -17,6 +17,14 @@ type SandboxSelectionMessage = SandboxSelectionBridge & {
   type: 'selection'
 }
 
+type SandboxRuntimeMessage = {
+  source: 'wtpt-sandbox'
+  token: string
+  revisionId: string
+  type: 'ready' | 'error'
+  error?: string
+}
+
 export function isSandboxSelectionMessage(
   event: Pick<MessageEvent, 'data' | 'source'>,
   sourceWindow: WindowProxy | null,
@@ -33,6 +41,23 @@ export function isSandboxSelectionMessage(
     && data.revisionId === revisionId
     && typeof data.slotId === 'string'
     && typeof data.candidateId === 'string',
+  )
+}
+
+export function isSandboxRuntimeMessage(
+  event: Pick<MessageEvent, 'data' | 'source'>,
+  sourceWindow: WindowProxy | null,
+  token: string,
+  revisionId: string,
+): event is MessageEvent<SandboxRuntimeMessage> {
+  if (!sourceWindow || event.source !== sourceWindow) return false
+  const data = event.data as Partial<SandboxRuntimeMessage> | null
+  return Boolean(
+    data
+    && data.source === 'wtpt-sandbox'
+    && (data.type === 'ready' || data.type === 'error')
+    && data.token === token
+    && data.revisionId === revisionId,
   )
 }
 
@@ -81,6 +106,7 @@ export async function createSandboxDocument(
   vars: Record<string, string> = {},
   token = crypto.randomUUID(),
   selection?: SandboxSelectionBridge,
+  runtimeRevisionId = selection?.revisionId ?? candidate.attemptId ?? candidate.id,
 ) {
   const code = escapeScript(await transpile(candidate))
   const css = escapeScript(candidate.files.filter((file) => file.path.endsWith('.css')).map((file) => file.content).join('\n'))
@@ -107,7 +133,7 @@ export async function createSandboxDocument(
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://esm.sh; style-src 'unsafe-inline'; connect-src https://esm.sh https://cdn.tailwindcss.com; img-src data: blob:; font-src data:; worker-src blob:" />
   <script>
-    const reportSandboxError=(error)=>parent.postMessage({source:'wtpt-sandbox',token:${JSON.stringify(token)},type:'error',error:error instanceof Error?error.message:String(error||'Runtime error')},'*');
+    const reportSandboxError=(error)=>parent.postMessage({source:'wtpt-sandbox',token:${JSON.stringify(token)},revisionId:${JSON.stringify(runtimeRevisionId)},type:'error',error:error instanceof Error?error.message:String(error||'Runtime error')},'*');
     window.addEventListener('error',(event)=>reportSandboxError(event.error||event.message));
     window.addEventListener('unhandledrejection',(event)=>reportSandboxError(event.reason));
   </script>
@@ -146,7 +172,7 @@ export async function createSandboxDocument(
       const Component=module.exports.default||module.exports.Component||module.exports;
       if(typeof Component!=='function'&&typeof Component!=='object')throw new Error('入口文件必须 default export 一个 React 组件');
       createRoot(document.getElementById('root')).render(React.createElement(Component,${props}));
-      setTimeout(()=>parent.postMessage({source:'wtpt-sandbox',token:${JSON.stringify(token)},type:'ready'},'*'),0);
+      setTimeout(()=>parent.postMessage({source:'wtpt-sandbox',token:${JSON.stringify(token)},revisionId:${JSON.stringify(runtimeRevisionId)},type:'ready'},'*'),0);
     } catch(error) { reportSandboxError(error) }
   </script>
 </body>
@@ -155,23 +181,27 @@ export async function createSandboxDocument(
 
 export type SandboxRuntimeOptions = {
   timeoutMs?: number
+  observationMs?: number
   getCssVariables?: () => Record<string, string>
 }
 
 export class SandboxRuntimeAdapter implements RuntimeAdapter {
   #timeoutMs: number
+  #observationMs: number
   #getCssVariables: () => Record<string, string>
 
   constructor(options: SandboxRuntimeOptions = {}) {
     this.#timeoutMs = options.timeoutMs ?? 15_000
+    this.#observationMs = options.observationMs ?? 300
     this.#getCssVariables = options.getCssVariables ?? (() => ({}))
   }
 
   async compile(candidate: CandidateArtifact, signal: AbortSignal): Promise<CompileResult> {
     let srcDoc: string
     const token = crypto.randomUUID()
+    const revisionId = candidate.attemptId ?? crypto.randomUUID()
     try {
-      srcDoc = await createSandboxDocument(candidate, this.#getCssVariables(), token)
+      srcDoc = await createSandboxDocument(candidate, this.#getCssVariables(), token, undefined, revisionId)
     } catch (reason) {
       return { ok: false, errors: [reason instanceof Error ? reason.message : String(reason)] }
     }
@@ -182,16 +212,24 @@ export class SandboxRuntimeAdapter implements RuntimeAdapter {
       const finish = (result: CompileResult) => {
         window.removeEventListener('message', onMessage)
         clearTimeout(timeout)
+        if (readyTimer !== null) clearTimeout(readyTimer)
         signal.removeEventListener('abort', onAbort)
         iframe.remove()
         resolve(result)
       }
       const onMessage = (event: MessageEvent) => {
-        const data = event.data as { source?: string; token?: string; type?: string; error?: string }
-        if (data.source !== 'wtpt-sandbox' || data.token !== token) return
-        finish(data.type === 'ready' ? { ok: true } : { ok: false, errors: [data.error ?? 'Sandbox runtime error'] })
+        if (!isSandboxRuntimeMessage(event, iframe.contentWindow, token, revisionId)) return
+        if (event.data.type === 'error') {
+          finish({ ok: false, errors: [event.data.error ?? 'Sandbox runtime error'] })
+          return
+        }
+        // React can report ready before effects and queued microtasks run. Keep
+        // the probe alive briefly so mount-time crashes cannot be exported as a
+        // successful component.
+        if (readyTimer === null) readyTimer = window.setTimeout(() => finish({ ok: true }), this.#observationMs)
       }
       const onAbort = () => finish({ ok: false, errors: ['编译已取消'] })
+      let readyTimer: number | null = null
       const timeout = window.setTimeout(() => finish({ ok: false, errors: ['沙箱编译超时，请检查网络或生成代码'] }), this.#timeoutMs)
       window.addEventListener('message', onMessage)
       signal.addEventListener('abort', onAbort, { once: true })

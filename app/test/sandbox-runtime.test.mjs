@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createSandboxDocument, isSandboxSelectionMessage } from '../src/lib/harness/sandbox-runtime.ts'
+import { createSandboxDocument, isSandboxRuntimeMessage, isSandboxSelectionMessage } from '../src/lib/harness/sandbox-runtime.ts'
 
 function candidate(content) {
   return {
@@ -31,6 +31,7 @@ test('sandbox transpiles TypeScript plus JSX with Babel 8 options', async () => 
   assert.match(document, /React\.createElement/)
   assert.match(document, /await Promise\.all/)
   assert.match(document, /type:'ready'/)
+  assert.match(document, /revisionId:"sandbox-runtime"/)
 })
 
 test('sandbox escapes user-controlled script endings', async () => {
@@ -78,4 +79,20 @@ test('sandbox selection messages require the current iframe, token and revision'
   assert.equal(isSandboxSelectionMessage(message, oldFrame, 'current-token', 'current-revision'), false)
   assert.equal(isSandboxSelectionMessage(message, currentFrame, 'old-token', 'current-revision'), false)
   assert.equal(isSandboxSelectionMessage(message, currentFrame, 'current-token', 'old-revision'), false)
+})
+
+test('sandbox runtime messages require the current iframe, token and revision', () => {
+  const currentFrame = {}
+  const message = {
+    source: currentFrame,
+    data: {
+      source: 'wtpt-sandbox', type: 'error', token: 'token-1', revisionId: 'attempt-2', error: 'boom',
+    },
+  }
+
+  assert.equal(isSandboxRuntimeMessage(message, currentFrame, 'token-1', 'attempt-2'), true)
+  assert.equal(isSandboxRuntimeMessage(message, {}, 'token-1', 'attempt-2'), false)
+  assert.equal(isSandboxRuntimeMessage(message, currentFrame, 'token-old', 'attempt-2'), false)
+  assert.equal(isSandboxRuntimeMessage(message, currentFrame, 'token-1', 'attempt-old'), false)
+  assert.equal(isSandboxRuntimeMessage({ ...message, data: { ...message.data, type: 'selection' } }, currentFrame, 'token-1', 'attempt-2'), false)
 })

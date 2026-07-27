@@ -48,6 +48,27 @@ const emit = (event) => useStore.getState().applyHarnessEvent(envelope(event))
 const sysText = () => useStore.getState().chat.filter((m) => m.role === 'sys').map((m) => m.text).join('\n')
 const candidate = () => useStore.getState().slots[0].candidates[0]
 
+test('a completed plan waits at the blueprint gate before any candidate is queued', () => {
+  const plan = {
+    project: { name: 'Weather', description: '' },
+    pages: [{ id: 'home', name: 'Home', route: '/', slots: ['current', 'forecast'] }],
+    visualDirections: [],
+    components: ['current', 'forecast'].map((id) => ({
+      id, role: id, slot: id, width: 'fluid', inputs: [], outputs: [], dependencies: ['react'], designTokens: [],
+    })),
+  }
+  withStore({}, () => {
+    emit({ type: 'plan.completed', plan })
+    assert.equal(useStore.getState().phase, 'blueprint')
+    assert.equal(useStore.getState().slots.length, 2)
+    assert.equal(useStore.getState().slots.every((slot) => slot.candidates.length === 0), true)
+
+    useStore.getState().confirmBlueprint()
+    assert.equal(useStore.getState().phase, 'direction')
+    assert.equal(useStore.getState().slots.every((slot) => slot.candidates.length === 0), true)
+  })
+})
+
 test('a user-initiated abort never surfaces as an error', () => {
   withStore({ slots: [slotWith('counter-a')] }, () => {
     emit({ type: 'task.failed', taskId: 'build:counter-a', error: '生成已停止' })
@@ -198,6 +219,44 @@ test('a successful render clears every trace of a previous failure', () => {
     assert.equal(candidate().error, undefined)
     assert.equal(candidate().errorKind, undefined)
     assert.equal(candidate().errorDetail, undefined)
+  })
+})
+
+test('diversity events mark a candidate and rerolling clears the warning in place', () => {
+  withStore({ slots: [slotWith('counter-a', 'rendered')] }, () => {
+    emit({
+      type: 'candidate.duplicate', componentId: 'counter', candidateId: 'counter-a',
+      score: 0.92, reason: '布局和信息层级高度相似',
+    })
+    assert.deepEqual(candidate().duplicate, { score: 0.92, reason: '布局和信息层级高度相似' })
+
+    emit({ type: 'candidate.rerolling', componentId: 'counter', candidateId: 'counter-a' })
+    assert.equal(candidate().status, 'streaming')
+    assert.equal(candidate().duplicate, undefined)
+    assert.equal(candidate().artifact, undefined)
+    assert.equal(candidate().code, '')
+  })
+})
+
+test('a repair keeps the last rendered artifact visible until the replacement renders', () => {
+  const oldArtifact = {
+    id: 'counter-a', componentId: 'counter', variant: 'expressive', attemptId: 'old-attempt',
+    files: [{ path: 'src/View.tsx', content: 'old' }], entryFile: 'src/View.tsx', previewProps: {}, notes: [],
+    runtimeStatus: 'rendered', compileErrors: [], fixAttempts: 0,
+  }
+  const fixedArtifact = { ...oldArtifact, attemptId: 'fixed-attempt', files: [{ path: 'src/View.tsx', content: 'fixed' }], runtimeStatus: 'source_ready' }
+  const slot = slotWith('counter-a', 'rendered')
+  slot.candidates[0].artifact = oldArtifact
+
+  withStore({ slots: [slot] }, () => {
+    emit({ type: 'repair.completed', candidate: fixedArtifact })
+    assert.equal(candidate().status, 'compiling')
+    assert.equal(candidate().artifact, fixedArtifact)
+    assert.equal(candidate().lastGoodArtifact, oldArtifact)
+
+    emit({ type: 'render.ready', candidateId: 'counter-a' })
+    assert.equal(candidate().status, 'rendered')
+    assert.equal(candidate().lastGoodArtifact, undefined)
   })
 })
 

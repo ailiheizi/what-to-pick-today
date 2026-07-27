@@ -106,6 +106,7 @@ function CandidateCard({
   workingElsewhere,
   onTryOn,
   onConfirm,
+  onReroll,
   cssVariables,
 }: {
   cand: CandidateState
@@ -119,6 +120,7 @@ function CandidateCard({
   workingElsewhere: number
   onTryOn: () => void
   onConfirm: () => void
+  onReroll: () => void
   cssVariables: Record<string, string>
 }) {
   const ready = cand.status === 'rendered'
@@ -245,11 +247,12 @@ function CandidateCard({
           </div>
         ) : failed ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center px-3 text-center">
+            {/* 报错原文已经在上方状态条里给过一次，这里只留一个耗时定格的徽标。 */}
             <span className="candidate-fail-badge inline-flex items-center gap-1 rounded-full px-2 py-1 text-[9px] font-bold">
-              <CircleAlert size={9} /> 生成失败 · {elapsed}
+              <CircleAlert size={9} /> 生成失败 · 停在 {elapsed}
             </span>
             {roomyPreview && (
-              <span className="mt-1.5 text-[8px] text-rose-400 line-clamp-3">{cand.error ?? '请重新生成'}</span>
+              <span className="mt-1.5 text-[8px] text-neutral-400">点「重新生成」可以再派一次这个 Agent</span>
             )}
           </div>
         ) : queued ? (
@@ -319,6 +322,26 @@ function CandidateCard({
           {isLocking ? '咔哒…' : isSelected ? '✓ 当前' : slotSelected ? '替换 →' : '扣合 →'}
         </button>
       </div>
+      {cand.duplicate && ready && (
+        <div className="mx-3 mb-2 flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-2.5 py-2 text-amber-800">
+          <CircleAlert size={11} className="shrink-0" />
+          <span className="min-w-0 flex-1 text-[8px] font-semibold leading-relaxed" title={cand.duplicate.reason}>
+            和其他方案太像（{Math.round(cand.duplicate.score * 100)}%）
+          </span>
+          {!isSelected && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation()
+                onReroll()
+              }}
+              className="shrink-0 rounded-full bg-amber-400 px-2 py-1 text-[8px] font-extrabold text-amber-950 hover:bg-amber-300"
+            >
+              换一个
+            </button>
+          )}
+        </div>
+      )}
       {(isTryOn || isSelected) && ready && (
         <div className={`candidate-choice-statebar ${isSelected ? 'bg-emerald-400' : 'bg-neutral-900'}`} />
       )}
@@ -331,7 +354,7 @@ type RailClock = { now: number; startedAt: Record<string, number>; settledAt: Re
 const EMPTY_CLOCK: RailClock = { now: 0, startedAt: {}, settledAt: {} }
 
 export default function CandidateRail() {
-  const { slots, activeSlotId, setActiveSlot, tryOn, confirmCandidate, phase, directionId, harnessMode } = useStore()
+  const { slots, activeSlotId, setActiveSlot, tryOn, confirmCandidate, rerollCandidate, phase, directionId, harnessMode } = useStore()
   const cssVariables = getDirection(directionId ?? 'apple').vars
   const scrollRef = useRef<HTMLDivElement>(null)
   const lastIdx = useRef(-1)
@@ -418,7 +441,7 @@ export default function CandidateRail() {
         <div className="mt-1.5 text-[10px] leading-relaxed text-neutral-400">
           生成开始后，这里会实时出现
           <br />
-          {harnessMode === 'kimi' ? '首轮每个槽位先生成 1 个候选。' : '每个槽位的 3 个候选。'}
+          {harnessMode === 'kimi' ? '确认蓝图后，每个槽位生成 3 个候选。' : '每个槽位的 3 个候选。'}
           <br />
           滚动试穿，点击扣合 🧩
         </div>
@@ -477,6 +500,7 @@ export default function CandidateRail() {
                 playClick()
               }}
               onConfirm={() => confirmCandidate(activeSlot.def.id, c.def.id)}
+              onReroll={() => rerollCandidate(activeSlot.def.id, c.def.id)}
               cssVariables={cssVariables}
             />
           ))}

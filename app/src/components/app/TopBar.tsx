@@ -7,6 +7,7 @@ import { buildHarnessExportProject, downloadHarnessExportProject } from '../../l
 const PHASE_LABEL: Record<string, string> = {
   idle: '待开始',
   planning: 'Planner 规划中',
+  blueprint: '等待确认蓝图',
   direction: '等待挑选底板',
   generating: '并发生成中',
   reviewing: 'AI 审查中',

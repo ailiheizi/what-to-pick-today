@@ -146,6 +146,8 @@ export type GenerationEvent =
   | { type: 'review.completed'; review: ReviewResult }
   | { type: 'task.retrying'; taskId: string; attempt: number; error: string }
   | { type: 'task.failed'; taskId: string; error: string }
+  | { type: 'candidate.rerolling'; componentId: string; candidateId: string }
+  | { type: 'candidate.duplicate'; componentId: string; candidateId: string; score: number; reason: string }
   | { type: 'generation.completed'; ready: number; expected: number }
   | { type: 'generation.cancelled' }
 

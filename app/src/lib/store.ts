@@ -12,7 +12,7 @@ import { classifyError } from './harness/errors.ts'
 import type { ErrorKind, ErrorSurface, ErrorVerdict } from './harness/errors.ts'
 import type { CandidateArtifact, EventEnvelope, PagePlan, VisualDirection } from './harness/types.ts'
 
-export type Phase = 'idle' | 'planning' | 'direction' | 'generating' | 'reviewing' | 'done'
+export type Phase = 'idle' | 'planning' | 'blueprint' | 'direction' | 'generating' | 'reviewing' | 'done'
 export type CandStatus = 'queued' | 'streaming' | 'compiling' | 'rendered' | 'failed'
 export type SlotStatus = 'planned' | 'generating' | 'ready' | 'selected'
 
@@ -49,6 +49,8 @@ export interface CandidateState {
   streamPreviewComplete?: boolean
   /** 真实 Harness 生成的源码 artifact；存在时使用 iframe 沙箱预览 */
   artifact?: CandidateArtifact
+  /** Last rendered artifact retained while a runtime failure is being repaired. */
+  lastGoodArtifact?: CandidateArtifact
   /**
    * User-facing failure copy for this card. Always the classified Chinese
    * message, never the raw thrown text — `CandidateRail` renders it directly.
@@ -58,6 +60,8 @@ export interface CandidateState {
   errorKind?: ErrorKind
   /** Raw untranslated failure text. Debugging only; never rendered alone. */
   errorDetail?: string
+  /** Diversity judge warning. The candidate remains selectable until rerolled. */
+  duplicate?: { score: number; reason: string }
 }
 
 /** 候选入场动效池 —— 每次生成都随机不一样 */
@@ -154,6 +158,7 @@ interface Store {
   closeStar: () => void
 
   submitPrompt: (text: string) => void
+  confirmBlueprint: () => void
   chooseDirection: (id: string) => void
   tryOn: (slotId: string, candId: string) => void
   confirmCandidate: (slotId: string, candId: string) => void
@@ -162,6 +167,8 @@ interface Store {
   switchBranch: (id: string) => void
   stopGeneration: () => void
   regenerate: () => void
+  rerollCandidate: (slotId: string, candId: string) => void
+  reportCandidateRuntimeError: (slotId: string, candId: string, attemptId: string | undefined, error: string) => void
   sendFollowUp: (text: string) => void
   toggleMute: () => void
   reset: () => void
@@ -376,14 +383,14 @@ export const useStore = create<Store>((set, get) => {
     if (event.type === 'plan.completed') {
       const scenario = scenarioFromPlan(event.plan)
       const slots = buildHarnessSlots(scenario)
-      set({ scenario, slots, activeSlotId: slots[0]?.def.id ?? null, phase: 'direction', planNotes: [
+      set({ scenario, slots, activeSlotId: slots[0]?.def.id ?? null, phase: 'blueprint', planNotes: [
         `理解需求：${event.plan.project.description || event.plan.project.name}`,
         `拆分页面：识别出 ${event.plan.components.length} 个独立组件槽位`,
         '组件合同与依赖白名单检查通过',
-        '规划完成：请选择一个设计风格底板',
+        '规划完成：请先确认页面蓝图和预计调用量',
       ] })
-      pushChat('ai', `页面计划完成：${scenario.slots.map((slot) => slot.role).join(' / ')}。请选择一个视觉底板。`)
-      pushHistory('plan', `拆分完成 · ${scenario.slots.length} 个槽位 · 首轮 ${scenario.slots.length} 个候选待生成`)
+      pushChat('ai', `页面计划完成：${scenario.slots.map((slot) => slot.role).join(' / ')}。请先确认蓝图，确认后才会生成候选。`)
+      pushHistory('plan', `拆分完成 · ${scenario.slots.length} 个槽位 · 等待蓝图确认`)
       return
     }
     if (event.type === 'component.queued') {
@@ -432,8 +439,9 @@ export const useStore = create<Store>((set, get) => {
     if (event.type === 'source.ready' || event.type === 'repair.completed' || event.type === 'revision.completed') {
       const artifact = event.candidate
       const slot = findCandidateSlot(artifact.id)
-      if (slot) patchCand(slot.def.id, artifact.id, () => ({
+      if (slot) patchCand(slot.def.id, artifact.id, (candidate) => ({
         artifact,
+        lastGoodArtifact: candidate.status === 'rendered' ? candidate.artifact : candidate.lastGoodArtifact,
         code: artifact.files.map((file) => file.content).join('\n'),
         progress: artifact.files.reduce((total, file) => total + file.content.length, 0),
         status: 'compiling',
@@ -464,6 +472,8 @@ export const useStore = create<Store>((set, get) => {
       patchCand(slot.def.id, event.candidateId, () => ({
         status: 'rendered', anim: eventAnim(envelope.motionCue),
         error: undefined, errorKind: undefined, errorDetail: undefined,
+        duplicate: undefined,
+        lastGoodArtifact: undefined,
         streamPreviewHtml: undefined, streamPreviewComplete: undefined,
       }))
       const current = get().slots.find((item) => item.def.id === slot.def.id)
@@ -471,6 +481,30 @@ export const useStore = create<Store>((set, get) => {
         patchSlot(slot.def.id, () => ({ tryOnId: event.candidateId }))
         if (!get().activeSlotId) set({ activeSlotId: slot.def.id })
       }
+      return
+    }
+    if (event.type === 'candidate.rerolling') {
+      patchCand(event.componentId, event.candidateId, () => ({
+        status: 'streaming',
+        progress: 0,
+        code: '',
+        artifact: undefined,
+        lastGoodArtifact: undefined,
+        error: undefined,
+        errorKind: undefined,
+        errorDetail: undefined,
+        duplicate: undefined,
+        streamPreviewHtml: undefined,
+        streamPreviewComplete: undefined,
+        anim: randAnim(),
+        seed: randSeed(),
+      }))
+      return
+    }
+    if (event.type === 'candidate.duplicate') {
+      patchCand(event.componentId, event.candidateId, () => ({
+        duplicate: { score: event.score, reason: event.reason },
+      }))
       return
     }
     if (event.type === 'generation.completed') {
@@ -795,13 +829,24 @@ export const useStore = create<Store>((set, get) => {
           set((s) => ({ planNotes: [...s.planNotes, n] }))
           if (i === scenario.plannerNotes.length - 1) {
             after(600, () => {
-              set({ phase: 'direction' })
-              pushChat('ai', '页面计划完成：' + scenario.slots.map((s) => s.role).join(' / ') + '。请先挑选一个视觉方向作为底板。')
-              pushHistory('plan', `拆分完成 · ${scenario.slots.length} 个槽位 · ${scenario.slots.length * 3} 个候选待生成`)
+              set({ phase: 'blueprint', slots: buildHarnessSlots(scenario), activeSlotId: scenario.slots[0]?.id ?? null })
+              pushChat('ai', '页面计划完成：' + scenario.slots.map((s) => s.role).join(' / ') + '。请先确认蓝图，确认后才会开始生成。')
+              pushHistory('plan', `拆分完成 · ${scenario.slots.length} 个槽位 · 等待蓝图确认`)
             })
           }
         })
       })
+    },
+
+    confirmBlueprint: () => {
+      const state = get()
+      if (state.phase !== 'blueprint' || !state.scenario) return
+      const candidateCount = state.scenario.slots.length * 3
+      const streamCount = candidateCount * 2
+      set({ phase: 'direction' })
+      pushHistory('plan', `确认页面蓝图 · ${state.scenario.slots.length} 个槽位 · 最多 ${streamCount} 条模型流`)
+      pushChat('ai', `蓝图已确认。下一步选择视觉底板；选择后将生成 ${candidateCount} 个候选，最多打开 ${streamCount} 条模型流（并发受限）。`)
+      sfx.playConfirm()
     },
 
     chooseDirection: (id) => {
@@ -942,6 +987,38 @@ export const useStore = create<Store>((set, get) => {
       })
       pushHistory('sys', '重新生成未确认的槽位')
       after(200, runScheduler)
+    },
+
+    rerollCandidate: (slotId, candId) => {
+      const state = get()
+      const slot = state.slots.find((item) => item.def.id === slotId)
+      const candidate = slot?.candidates.find((item) => item.def.id === candId)
+      if (!candidate || slot?.selectedId === candId || candidate.status !== 'rendered' || state.harnessMode !== 'kimi' || !activeHarness) return
+      const session = activeHarness
+      set({ phase: 'generating', harnessError: null, stopped: false })
+      pushHistory('sys', `重新生成相似候选 · ${candidate.def.label}`)
+      void session.rerollCandidate(candId).catch((reason: unknown) => {
+        if (activeHarness !== session) return
+        reportFailure(reason, '候选重新生成失败')
+        set({ phase: 'generating' })
+      })
+    },
+
+    reportCandidateRuntimeError: (slotId, candId, attemptId, error) => {
+      const state = get()
+      const slot = state.slots.find((item) => item.def.id === slotId)
+      const candidate = slot?.candidates.find((item) => item.def.id === candId)
+      if (!candidate?.artifact || candidate.status !== 'rendered' || state.harnessMode !== 'kimi' || !activeHarness) return
+      if (attemptId !== undefined && candidate.artifact.attemptId !== attemptId) return
+      patchCand(slotId, candId, () => ({
+        status: 'compiling',
+        lastGoodArtifact: candidate.artifact,
+        error: '组件运行时出错，Fixer 正在修复；已保留上一帧。',
+        errorKind: 'compile',
+        errorDetail: error,
+      }))
+      void activeHarness.reportCompile(candId, { ok: false, errors: [`RuntimeError: ${error}`] }, attemptId)
+        .catch((reason: unknown) => reportFailure(reason, '运行时修复失败'))
     },
 
     sendFollowUp: (text) => {

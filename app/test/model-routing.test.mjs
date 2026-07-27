@@ -255,9 +255,9 @@ test('malformed input never throws and always yields a complete table', () => {
     Object.create(null),
   ]
 
-  for (const input of inputs) {
+  for (const [index, input] of inputs.entries()) {
     const routing = resolveModelRouting(input)
-    assert.deepEqual(Object.keys(routing).sort(), [...MODEL_ROLES].sort(), `keys for ${String(input)}`)
+    assert.deepEqual(Object.keys(routing).sort(), [...MODEL_ROLES].sort(), `keys for input #${index}`)
     for (const role of MODEL_ROLES) {
       assert.equal(typeof routing[role].model, 'string')
       assert.equal(routing[role].maxTokens, TODAY[role].maxTokens)

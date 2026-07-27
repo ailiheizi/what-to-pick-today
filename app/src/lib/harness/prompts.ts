@@ -4,6 +4,44 @@ import { builderAgentFor } from './agents.ts'
 const JSON_ONLY = '只返回合法 JSON，不要 Markdown 代码围栏，不要添加 JSON 之外的解释。'
 const ALLOWED_DEPENDENCIES = ['react', 'react-dom', 'lucide-react', 'motion']
 
+function sampleSharedValue(name: string, type: string) {
+  const key = name.toLowerCase()
+  const normalizedType = type.toLowerCase()
+  if (/city|城市|location/.test(key)) return '上海'
+  if (/unit|单位/.test(key)) return '°C'
+  if (/locale|语言/.test(key)) return 'zh-CN'
+  if (/boolean|bool/.test(normalizedType)) return false
+  if (/number|int|float/.test(normalizedType)) return 0
+  if (/array|\[\]/.test(normalizedType)) return []
+  return `示例${name}`
+}
+
+export function sharedPreviewProps(plan: PagePlan) {
+  const occurrences = new Map<string, { name: string; type: string; count: number }>()
+  for (const component of plan.components) {
+    for (const input of component.inputs) {
+      const key = input.name.trim().toLowerCase()
+      const current = occurrences.get(key)
+      occurrences.set(key, current
+        ? { ...current, count: current.count + 1 }
+        : { name: input.name, type: input.type, count: 1 })
+    }
+  }
+  return Object.fromEntries([...occurrences.values()]
+    .filter((input) => input.count > 1)
+    .map((input) => [input.name, sampleSharedValue(input.name, input.type)]))
+}
+
+function compositionContext(plan: PagePlan, component: ComponentContract) {
+  return {
+    currentResponsibility: { id: component.id, role: component.role, inputs: component.inputs, outputs: component.outputs },
+    siblingResponsibilities: plan.components
+      .filter((item) => item.id !== component.id)
+      .map((item) => ({ id: item.id, role: item.role, inputs: item.inputs, outputs: item.outputs })),
+    sharedPreviewProps: sharedPreviewProps(plan),
+  }
+}
+
 export function plannerMessages(requirement: string) {
   return [
     {
@@ -79,6 +117,7 @@ export function builderMessages(input: {
         project: input.plan.project,
         visualDNA: input.direction.visualDNA,
         componentContract: input.component,
+        compositionContext: compositionContext(input.plan, input.component),
         builderAgent: agent,
         variant: input.variant,
         variantProfile,
@@ -93,6 +132,9 @@ export function builderMessages(input: {
           '候选差异必须来自构图、信息层级、控件形态和动效语言，不能只替换颜色、阴影或圆角',
           `当前是 ${input.variant} 方案，必须贯彻其 composition、interaction 和 signature；不要折中成另外两种方案`,
           '若合同声明 inputs，必须从 props 使用这些共享输入；若声明 outputs，必须调用同名回调，不得在组件内部复制兄弟组件负责的状态',
+          '当前组件只展示 currentResponsibility.role 所描述的主体内容；兄弟组件的标题、主体指标、列表或控制区禁止出现在本组件中',
+          '若当前职责包含“当前/概览/摘要”，不得附带未来、历史或明细列表；若职责包含“未来/预报/历史/列表”，不得再放一张当前状态摘要卡，只能把共享字段作为小型上下文标签',
+          'sharedPreviewProps 中的共享字段必须原样用于 previewHtml 和 previewProps；共享字段只可作为上下文标签，不得借此复制兄弟组件的主体内容',
           `同页兄弟组件为：${input.plan.components.filter((item) => item.id !== input.component.id).map((item) => `${item.id}:${item.role}`).join('；') || '无'}；当前组件不得重复它们的职责`,
           '不得省略代码，不得返回伪代码',
         ],
@@ -115,6 +157,7 @@ export function builderMessages(input: {
  */
 export function draftPreviewMessages(input: {
   requirement: string
+  plan: PagePlan
   direction: VisualDirection
   component: ComponentContract
   variant: CandidateVariant
@@ -131,12 +174,16 @@ export function draftPreviewMessages(input: {
         requirement: input.requirement,
         visualDNA: input.direction.visualDNA,
         componentContract: input.component,
+        compositionContext: compositionContext(input.plan, input.component),
         builderAgent: agent,
         rules: [
           '根元素必须立刻包含关键可见内容；前 240 个字符出现标题、数字或按钮文字',
           '使用内联样式，允许末尾追加 style；绑定 --dna-* CSS 变量',
           '禁止 script、iframe、外部资源、表单提交和事件处理器',
           '控制在 900 字符以内，优先完整布局和清晰层级',
+          '只画 currentResponsibility.role 的主体内容，禁止出现 siblingResponsibilities 的标题、主体指标、列表或操作区',
+          '若当前职责包含“当前/概览/摘要”，不得画未来、历史或明细列表；若职责包含“未来/预报/历史/列表”，不得画当前状态摘要，只保留共享上下文标签',
+          '所有共享上下文字段使用 sharedPreviewProps 的固定值；不得自行更换城市、单位或其他共享语义',
         ],
         outputSchema: { previewHtml: '<main style="...">可立即显示的完整组件草图</main>' },
       }),

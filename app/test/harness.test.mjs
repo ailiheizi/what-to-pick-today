@@ -374,6 +374,109 @@ test('candidate generation exposes the full team and starts every specialist at 
   ]))
 })
 
+test('multi-component generation gives every slot a lead candidate before second variants', async () => {
+  let releaseBuilders
+  const builderGate = new Promise((resolve) => { releaseBuilders = resolve })
+  const started = []
+  const dna = {
+    concept: 'playful', mood: [], colors: {}, typography: {},
+    geometry: { radius: '24px', border: 'soft', density: 'normal' },
+    motion: { personality: 'spring', duration: '300ms', easing: 'ease-out' },
+    compositionRules: [],
+  }
+  const plan = {
+    project: { name: 'Weather', description: '' },
+    pages: [{ id: 'home', name: 'Home', route: '/', slots: ['current', 'forecast'] }],
+    visualDirections: [{ id: 'test', name: 'Test', description: '', visualDNA: dna }],
+    components: [
+      { id: 'current', role: '当前天气', slot: 'current', width: 'fluid', inputs: [], outputs: [], dependencies: ['react'], designTokens: [] },
+      { id: 'forecast', role: '七天预报', slot: 'forecast', width: 'fluid', inputs: [], outputs: [], dependencies: ['react'], designTokens: [] },
+    ],
+  }
+  const sse = (result) => `data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify(result) } }] })}\n\ndata: [DONE]\n\n`
+  const fetchImpl = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    const system = body.messages[0].content
+    if (system.includes('Planner')) return new Response(sse(plan))
+    if (system.includes('UI Draft Renderer')) return new Response(sse({ previewHtml: '<main>draft</main>' }))
+    const input = JSON.parse(body.messages[1].content)
+    started.push(`${input.componentContract.id}:${input.variant}`)
+    await builderGate
+    const file = input.outputSchema.files[0]
+    return new Response(sse({
+      previewHtml: '<main>ready</main>',
+      files: [{ path: file.path, content: 'export default function View(){ return null }' }],
+      entryFile: file.path, previewProps: {}, notes: [],
+    }))
+  }
+  const session = new HarnessSession('制作天气页面', {
+    kimi: { apiKey: 'test', baseUrl: 'https://example.test/v1', model: 'test', codeModel: 'test', temperature: 0 },
+    fetchImpl,
+    persist: false,
+    candidateCount: 3,
+    concurrency: 2,
+    runtime: { compile: async () => ({ ok: true }) },
+  })
+  const generatedPlan = await session.start()
+  const generation = session.chooseDirection(generatedPlan.visualDirections[0].id)
+  for (let attempt = 0; attempt < 40 && started.length < 2; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+
+  assert.deepEqual(started, ['current:expressive', 'forecast:expressive'])
+  releaseBuilders()
+  await generation
+  assert.equal(session.candidates.length, 6)
+})
+
+test('a user-triggered reroll replaces one candidate in place with a fresh attempt', async () => {
+  let builderCall = 0
+  const events = []
+  const sse = (result) => `data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify(result) } }] })}\n\ndata: [DONE]\n\n`
+  const fetchImpl = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    const system = body.messages[0].content
+    if (system.includes('UI Draft Renderer')) return new Response(sse({ previewHtml: '<main>draft</main>' }))
+    builderCall += 1
+    const input = JSON.parse(body.messages[1].content)
+    const file = input.outputSchema.files[0]
+    return new Response(sse({
+      previewHtml: `<main>build-${builderCall}</main>`,
+      files: [{ path: file.path, content: `export default function View(){ return ${builderCall} }` }],
+      entryFile: file.path, previewProps: {}, notes: [],
+    }))
+  }
+  const session = new HarnessSession('做一个计数器', {
+    kimi: { apiKey: 'test', baseUrl: 'https://example.test/v1', model: 'test', codeModel: 'test', temperature: 0 },
+    fetchImpl,
+    persist: false,
+    candidateCount: 1,
+    runtime: { compile: async () => ({ ok: true }) },
+  })
+  session.subscribe(({ event }) => events.push(event))
+  await session.start()
+  await session.chooseVisualDirection({
+    id: 'test', name: 'Test', description: '',
+    visualDNA: {
+      concept: 'playful', mood: [], colors: {}, typography: {},
+      geometry: { radius: '24px', border: 'soft', density: 'normal' },
+      motion: { personality: 'spring', duration: '300ms', easing: 'ease-out' },
+      compositionRules: [],
+    },
+  })
+  const before = session.candidates[0]
+  const replacement = await session.rerollCandidate(before.id)
+
+  assert.ok(replacement)
+  assert.equal(replacement.id, before.id)
+  assert.equal(replacement.componentId, before.componentId)
+  assert.equal(replacement.variant, before.variant)
+  assert.notEqual(replacement.attemptId, before.attemptId)
+  assert.equal(replacement.runtimeStatus, 'rendered')
+  assert.equal(session.candidates.length, 1)
+  assert.equal(events.some((event) => event.type === 'candidate.rerolling' && event.candidateId === before.id), true)
+})
+
 test('stopping generation suppresses late source and render events', async () => {
   let releaseBuilders
   const builderGate = new Promise((resolve) => { releaseBuilders = resolve })
@@ -551,12 +654,15 @@ test('builder variants require structural and motion differences', () => {
   const profiles = messagesByVariant.map((messages) => {
     return JSON.parse(messages[1].content).variantProfile
   })
+  const builderContext = JSON.parse(messagesByVariant[0][1].content).compositionContext
   assert.equal(new Set(profiles.map(({ composition }) => composition)).size, 3)
   assert.equal(new Set(profiles.map(({ interaction }) => interaction)).size, 3)
   assert.match(profiles[2].composition, /不得只是换颜色/)
   assert.match(messagesByVariant[0][0].content, /Product Agent/)
   assert.match(messagesByVariant[1][0].content, /Motion Agent/)
   assert.match(messagesByVariant[2][0].content, /Explorer Agent/)
+  assert.equal(builderContext.currentResponsibility.id, 'counter')
+  assert.deepEqual(builderContext.siblingResponsibilities, [])
 })
 
 test('full browser session plans, builds, compiles, selects and reviews', async () => {
@@ -722,4 +828,232 @@ test('a slow draft cannot overwrite the builder preview it lost the race to', as
   const lateDraft = previews.findIndex((html, index) => index > firstBuilder && html.includes('draft'))
   assert.equal(lateDraft, -1)
   assert.equal(previews.at(-1).includes('builder'), true)
+})
+
+test('a superseded generation run cannot emit events or mutate candidates', async () => {
+  // The draft stream is fire-and-forget: nothing awaits it and nothing aborts
+  // it when its own run ends normally. If its builder failed, `sourceReady` is
+  // never latched either, so a slow provider could still paint a sketch into a
+  // rail that a *later* run now owns. Only run identity catches this — the
+  // abort signal is clean in this scenario.
+  const encoder = new TextEncoder()
+  let releaseStaleDraft
+  const staleDraftGate = new Promise((resolve) => { releaseStaleDraft = resolve })
+  const sse = (obj) => `data: ${JSON.stringify({ choices: [{ delta: { content: obj } }] })}\n\n`
+  let draftCalls = 0
+  let builderCalls = 0
+  const fetchImpl = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    const system = body.messages[0].content
+    const input = JSON.parse(body.messages[1].content)
+    if (system.includes('UI Draft Renderer')) {
+      draftCalls += 1
+      if (draftCalls > 1) {
+        return new Response(`${sse(JSON.stringify({ previewHtml: `<main>${'fresh'.repeat(20)}</main>` }))}data: [DONE]\n\n`)
+      }
+      return new Response(new ReadableStream({
+        async start(controller) {
+          await staleDraftGate
+          controller.enqueue(encoder.encode(sse(JSON.stringify({ previewHtml: `<main>${'STALEDRAFT'.repeat(10)}</main>` }))))
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+          controller.close()
+        },
+      }))
+    }
+    builderCalls += 1
+    // The first run's builder fails, so that run never latches `sourceReady`
+    // and never aborts — the exact window the run guard has to close.
+    if (builderCalls === 1) return new Response('{"error":{"message":"upstream is down"}}', { status: 503 })
+    const file = input.outputSchema.files[0]
+    return new Response(`${sse(JSON.stringify({
+      previewHtml: `<main>${'fresh'.repeat(20)}</main>`,
+      files: [{ path: file.path, content: 'export default function View(){ return null }' }],
+      entryFile: file.path, previewProps: {}, notes: [],
+    }))}data: [DONE]\n\n`)
+  }
+  const session = new HarnessSession('做一个计数器', {
+    kimi: { apiKey: 'test', baseUrl: 'https://example.test/v1', model: 'test', codeModel: 'test', temperature: 0 },
+    fetchImpl,
+    persist: false,
+    candidateCount: 1,
+    retries: 0,
+    runtime: { compile: async () => ({ ok: true }) },
+  })
+  const seen = []
+  session.subscribe(({ event }) => seen.push(event))
+  await session.start()
+  await session.chooseVisualDirection({
+    id: 'test', name: 'Test', description: '',
+    visualDNA: {
+      concept: 'plain', mood: [], colors: {}, typography: {},
+      geometry: { radius: '8px', border: 'soft', density: 'normal' },
+      motion: { personality: 'spring', duration: '200ms', easing: 'ease-out' },
+      compositionRules: [],
+    },
+  })
+  const stale = seen.find((event) => event.type === 'component.queued')
+  assert.ok(stale)
+  assert.equal(session.candidates.length, 0)
+
+  // A second run takes over the rail while the first run's draft is still open.
+  await session.generateCandidates()
+  const fresh = seen.filter((event) => event.type === 'component.queued').at(-1)
+  assert.notEqual(fresh.candidateId, stale.candidateId)
+  const beforeLateDelivery = seen.length
+
+  releaseStaleDraft()
+  await new Promise((resolve) => setTimeout(resolve, 40))
+
+  // Nothing the superseded run produces may reach a subscriber...
+  assert.deepEqual(seen.slice(beforeLateDelivery), [])
+  assert.equal(seen.some((event) => event.type === 'preview.updated' && event.candidateId === stale.candidateId), false)
+  // ...and the rail still holds exactly the live run's artifact.
+  assert.equal(session.candidates.length, 1)
+  assert.equal(session.candidates[0].id, fresh.candidateId)
+  assert.equal(session.candidates[0].runtimeStatus, 'rendered')
+})
+
+test('a compile verdict for a replaced artifact is ignored', async () => {
+  const sse = (obj) => `data: ${JSON.stringify({ choices: [{ delta: { content: obj } }] })}\n\n`
+  const fetchImpl = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    const system = body.messages[0].content
+    const input = JSON.parse(body.messages[1].content)
+    if (system.includes('UI Draft Renderer')) {
+      return new Response(`${sse(JSON.stringify({ previewHtml: `<main>${'draft'.repeat(20)}</main>` }))}data: [DONE]\n\n`)
+    }
+    const file = system.includes('Revision Builder')
+      ? { path: input.outputSchema.files[0].path }
+      : input.outputSchema.files[0]
+    return new Response(`${sse(JSON.stringify({
+      previewHtml: `<main>${'build'.repeat(20)}</main>`,
+      files: [{ path: file.path, content: 'export default function View(){ return null }' }],
+      entryFile: file.path, previewProps: {}, notes: [],
+    }))}data: [DONE]\n\n`)
+  }
+  const session = new HarnessSession('做一个计数器', {
+    kimi: { apiKey: 'test', baseUrl: 'https://example.test/v1', model: 'test', codeModel: 'test', temperature: 0 },
+    fetchImpl,
+    persist: false,
+    candidateCount: 1,
+    runtime: { compile: async () => ({ ok: true }) },
+  })
+  // `subscribe` replays the backlog, so attach once up front and slice at the
+  // point of interest rather than attaching a second listener later.
+  const seen = []
+  session.subscribe(({ event }) => seen.push(event.type))
+  await session.start()
+  await session.chooseVisualDirection({
+    id: 'test', name: 'Test', description: '',
+    visualDNA: {
+      concept: 'plain', mood: [], colors: {}, typography: {},
+      geometry: { radius: '8px', border: 'soft', density: 'normal' },
+      motion: { personality: 'spring', duration: '200ms', easing: 'ease-out' },
+      compositionRules: [],
+    },
+  })
+  const built = session.candidates[0]
+  const staleAttemptId = built.attemptId
+  assert.equal(typeof staleAttemptId, 'string')
+
+  await session.select(built.componentId, built.id)
+  await session.revise('把按钮改大一点')
+  const revised = session.candidates[0]
+  // The revision replaced the artifact under the same rail slot, so a compile
+  // started against the previous source is now describing dead code.
+  assert.equal(revised.id, built.id)
+  assert.notEqual(revised.attemptId, staleAttemptId)
+  assert.equal(revised.runtimeStatus, 'rendered')
+
+  const marker = seen.length
+  await session.reportCompile(built.id, { ok: false, errors: ['stale build failed'] }, staleAttemptId)
+
+  // The stale verdict is dropped whole: no events, no status change, no repair.
+  assert.deepEqual(seen.slice(marker), [])
+  assert.equal(session.candidates[0].runtimeStatus, 'rendered')
+  assert.deepEqual(session.candidates[0].compileErrors, [])
+  assert.equal(session.candidates[0].attemptId, revised.attemptId)
+
+  // A verdict that names the live attempt still applies normally: it is
+  // published and it drives the repair path.
+  await session.reportCompile(built.id, { ok: false, errors: ['live build failed'] }, revised.attemptId)
+  const applied = seen.slice(marker)
+  assert.equal(applied.includes('compile.failed'), true)
+  assert.equal(applied.includes('repair.started'), true)
+  // The repair mints a fresh attempt identity, retiring the one it replaced.
+  assert.notEqual(session.candidates[0].attemptId, revised.attemptId)
+})
+
+test('a completed draft cannot overwrite a newer builder preview', async () => {
+  // `preview.complete` short-circuits the incremental length gate entirely, so
+  // a draft that *finishes* late is the one shape that can repaint the sketch
+  // with a shorter, older document after the builder has already taken over.
+  const encoder = new TextEncoder()
+  let releaseDraft
+  // The draft is held until a builder preview has actually been *published*,
+  // not merely enqueued. Releasing on enqueue lets the draft win the race and
+  // the assertion below then passes vacuously.
+  const draftGate = new Promise((resolve) => { releaseDraft = resolve })
+  const previews = []
+  const sse = (obj) => `data: ${JSON.stringify({ choices: [{ delta: { content: obj } }] })}\n\n`
+  const fetchImpl = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    const system = body.messages[0].content
+    const input = JSON.parse(body.messages[1].content)
+    if (system.includes('UI Draft Renderer')) {
+      return new Response(new ReadableStream({
+        async start(controller) {
+          await draftGate
+          // Short *and* complete: strictly worse than what the builder painted.
+          controller.enqueue(encoder.encode(sse(JSON.stringify({ previewHtml: `<main>${'DRAFTMARK'.repeat(6)}</main>` }))))
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+          controller.close()
+        },
+      }))
+    }
+    const file = input.outputSchema.files[0]
+    const tail = {
+      files: [{ path: file.path, content: 'export default function View(){ return null }' }],
+      entryFile: file.path, previewProps: {}, notes: [],
+    }
+    return new Response(new ReadableStream({
+      async start(controller) {
+        controller.enqueue(encoder.encode(sse(`{"previewHtml":"<main>${'BUILDERMARK'.repeat(40)}</main>"`)))
+        await new Promise((resolve) => setTimeout(resolve, 25))
+        controller.enqueue(encoder.encode(sse(`,${JSON.stringify(tail).slice(1)}`)))
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'))
+        controller.close()
+      },
+    }))
+  }
+  const session = new HarnessSession('做一个计数器', {
+    kimi: { apiKey: 'test', baseUrl: 'https://example.test/v1', model: 'test', codeModel: 'test', temperature: 0 },
+    fetchImpl,
+    persist: false,
+    candidateCount: 1,
+    runtime: { compile: async () => ({ ok: true }) },
+  })
+  session.subscribe(({ event }) => {
+    if (event.type !== 'preview.updated') return
+    previews.push(event.html)
+    if (event.html.includes('BUILDERMARK')) releaseDraft()
+  })
+  await session.start()
+  await session.chooseVisualDirection({
+    id: 'test', name: 'Test', description: '',
+    visualDNA: {
+      concept: 'plain', mood: [], colors: {}, typography: {},
+      geometry: { radius: '8px', border: 'soft', density: 'normal' },
+      motion: { personality: 'spring', duration: '200ms', easing: 'ease-out' },
+      compositionRules: [],
+    },
+  })
+  await new Promise((resolve) => setTimeout(resolve, 60))
+
+  const firstBuilder = previews.findIndex((html) => html.includes('BUILDERMARK'))
+  assert.notEqual(firstBuilder, -1)
+  // Once the builder has painted, the draft may never reclaim the preview —
+  // its document is not the one that becomes the component.
+  assert.equal(previews.slice(firstBuilder).some((html) => html.includes('DRAFTMARK')), false)
+  assert.equal(previews.at(-1).includes('BUILDERMARK'), true)
 })

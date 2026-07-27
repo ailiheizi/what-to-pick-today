@@ -1,8 +1,9 @@
 import { HarnessEventStream } from './events.ts'
 import { builderAgentFor } from './agents.ts'
+import { compareCandidates, findRerollTargets } from './diversity.ts'
 import { BrowserKimiClient, extractStreamingJsonString } from './kimi.ts'
 import { createAtomicPlan, normalizePlanCohesion } from './plan-cohesion.ts'
-import { builderMessages, draftPreviewMessages, fixerMessages, plannerMessages, reviewerMessages, revisionMessages } from './prompts.ts'
+import { builderMessages, draftPreviewMessages, fixerMessages, plannerMessages, reviewerMessages, revisionMessages, sharedPreviewProps } from './prompts.ts'
 import { parseCandidate, parsePlan, parseReview } from './schemas.ts'
 import { TaskScheduler } from './scheduler.ts'
 import { harnessStorage } from './storage.ts'
@@ -173,14 +174,22 @@ export class HarnessSession {
     const targets = componentIds?.length
       ? this.#plan.components.filter((component) => componentIds.includes(component.id))
       : this.#plan.components
-    const jobs = targets.flatMap((component) => {
+    const variantsByComponent = new Map(targets.map((component) => {
       const existing = new Set([...this.#candidates.values()]
         .filter((candidate) => candidate.componentId === component.id)
         .map((candidate) => candidate.variant))
-      return VARIANTS.filter((variant) => !existing.has(variant))
-        .slice(0, this.#options.candidateCount)
-        .map((variant) => ({ component, variant }))
-    })
+      return [component.id, VARIANTS.filter((variant) => !existing.has(variant))
+        .slice(0, this.#options.candidateCount)] as const
+    }))
+    // Interleave by specialist round instead of exhausting one component first.
+    // With a three-job concurrency cap, component-major ordering made the first
+    // slot occupy the whole first wave while every other part of the page stayed
+    // blank. Round-robin ordering gives each slot its lead candidate before any
+    // slot consumes capacity on a second direction.
+    const jobs = VARIANTS.flatMap((variant) => targets.flatMap((component) =>
+      variantsByComponent.get(component.id)?.includes(variant)
+        ? [{ component, variant }]
+        : []))
     // Put every specialist on the rail immediately. Execution can still happen
     // in cost-aware waves, but the user should see the full design team and its
     // queued/active state from the first frame instead of discovering agents
@@ -244,6 +253,7 @@ export class HarnessSession {
       const ready = results.filter((candidate) => this.#candidates.get(candidate.id)?.runtimeStatus === 'rendered').length
       this.events.publish({ type: 'generation.completed', ready, expected: preparedJobs.length }, 'ready')
       await this.#persist()
+      this.#reportDuplicateCandidates(targets.map((component) => component.id))
       return results
     } catch (reason) {
       // LangGraph propagates AbortError from graph.invoke even when individual
@@ -257,6 +267,99 @@ export class HarnessSession {
       // Only the run that still owns the session may clear its identity. A
       // newer run has already installed its own; wiping it here would let this
       // stale run's stragglers pass every `#runId` check that follows.
+      if (this.#generationController?.signal === generationSignal) this.#generationController = null
+      if (this.#runId === runId) this.#runId = null
+    }
+  }
+
+  /**
+   * Flag candidates that are only superficially different from a sibling.
+   *
+   * The product's premise is that each slot offers genuinely comparable
+   * alternatives; three variations on one layout with a different accent colour
+   * is not a choice. This reports the collision so the UI can offer a re-roll —
+   * it deliberately does not regenerate automatically, because spending another
+   * builder request per duplicate without asking is exactly the runaway cost the
+   * blueprint gate is meant to prevent.
+   */
+  #reportDuplicateCandidates(componentIds: string[]) {
+    for (const componentId of componentIds) {
+      const rendered = [...this.#candidates.values()]
+        .filter((candidate) => candidate.componentId === componentId && candidate.runtimeStatus === 'rendered')
+      if (rendered.length < 2) continue
+      const duplicates = findRerollTargets(rendered)
+      for (const candidateId of duplicates) {
+        const candidate = this.#candidates.get(candidateId)
+        if (!candidate) continue
+        const candidateIndex = rendered.findIndex((item) => item.id === candidateId)
+        const comparison = rendered.slice(0, candidateIndex)
+          .map((original) => compareCandidates(original, candidate))
+          .filter((result) => result.verdict === 'near_duplicate')
+          .sort((left, right) => right.score - left.score)[0] ?? null
+        this.events.publish({
+          type: 'candidate.duplicate',
+          componentId,
+          candidateId,
+          score: comparison?.score ?? 1,
+          reason: comparison?.reason ?? '与同槽位的其他方案高度相似',
+        }, 'ready')
+      }
+    }
+  }
+
+  /** Replace one candidate in place after the user accepts the extra API cost. */
+  async rerollCandidate(candidateId: string) {
+    if (!this.#plan || !this.#direction) throw new Error('页面上下文尚未就绪')
+    if (this.#generationRunning) throw new Error('仍有候选正在生成，请稍后再换')
+    const previous = this.#requireCandidate(candidateId)
+    const generationController = new AbortController()
+    const generationSignal = generationController.signal
+    const runId = crypto.randomUUID()
+    const attemptId = crypto.randomUUID()
+    this.#generationController = generationController
+    this.#runId = runId
+    this.#generationRunning = true
+    this.#phase = 'generating'
+    this.events.publish({
+      type: 'candidate.rerolling', componentId: previous.componentId, candidateId,
+    }, 'generating')
+
+    try {
+      const { runComponentAgentGraph } = await import('./generation-graph.ts')
+      const results = await runComponentAgentGraph([{
+        id: `reroll:${candidateId}`,
+        variant: previous.variant,
+        run: () => this.#buildCandidate({
+          componentId: previous.componentId,
+          candidateId,
+          variant: previous.variant,
+          signal: generationSignal,
+          runId,
+          attemptId,
+        }),
+      }], {
+        signal: generationSignal,
+        concurrency: 1,
+        retries: this.#options.retries,
+        onRetry: (taskId, attempt, error) => {
+          if (this.#runId !== runId) return
+          this.events.publish({ type: 'task.retrying', taskId, attempt, error: error.message }, 'generating')
+        },
+        onFailed: (taskId, error) => {
+          if (this.#runId !== runId) return
+          this.events.publish({ type: 'task.failed', taskId, error: error.message }, 'generating')
+        },
+      })
+      if (generationSignal.aborted || this.#runId !== runId) return null
+      this.#phase = 'selecting'
+      await this.#persist()
+      this.#reportDuplicateCandidates([previous.componentId])
+      return results[0] ?? null
+    } catch (reason) {
+      if (!generationSignal.aborted && this.#runId === runId) this.#phase = 'selecting'
+      throw reason
+    } finally {
+      this.#generationRunning = false
       if (this.#generationController?.signal === generationSignal) this.#generationController = null
       if (this.#runId === runId) this.#runId = null
     }
@@ -289,11 +392,14 @@ export class HarnessSession {
     let builderOwnsPreview = false
     const publishStreamingPreview = (response: string, source: 'draft' | 'builder') => {
       if (sourceReady || signal.aborted) return
+      // Once the builder has painted, the draft must never reclaim the preview:
+      // the builder's document is the one that becomes the component, and a
+      // late-finishing draft is both older and shorter.
+      if (source === 'draft' && builderOwnsPreview) return
       // The draft stream is fire-and-forget and never observes an abort, so a
       // run that has been replaced would otherwise keep painting sketches into
       // a rail that now belongs to a different generation.
       if (this.#runId !== runId) return
-      if (source === 'draft' && builderOwnsPreview) return
       const preview = extractStreamingJsonString(response, 'previewHtml')
       const visibleText = preview.value.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
       if (visibleText.length < 2 || preview.value.length < 48) return
@@ -307,6 +413,7 @@ export class HarnessSession {
     let draftResponse = ''
     void this.#client.completeJson(draftPreviewMessages({
       requirement: this.requirement,
+      plan: this.#plan,
       direction: this.#direction,
       component,
       variant,
@@ -348,6 +455,7 @@ export class HarnessSession {
     const candidate = parseCandidate(raw, {
       id: candidateId, componentId, variant, agent: builderAgentFor(variant), attemptId,
     })
+    candidate.previewProps = { ...candidate.previewProps, ...sharedPreviewProps(this.#plan) }
     // Last checkpoint before the artifact becomes session state. Parsing is
     // synchronous, but `parseCandidate` runs after two awaited streams, so the
     // run can have been replaced between the check above and this line only via

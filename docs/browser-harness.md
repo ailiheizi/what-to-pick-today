@@ -43,6 +43,25 @@ AI_PROXY_API_KEY=temporary-key
 - `export.ts`：把已选候选组装为可下载的 React 项目（`src/App.tsx` 入口 + 固定依赖版本）。
 - `local-proxy.ts`：开发用 `/api/model` 代理的路径解析与同源校验纯函数，供 Vite 插件复用。
 
+### 接线状态（重要，先看这张表再动手）
+
+仓库里存在若干**已实现、有完整测试、但没有任何应用代码调用**的模块。它们通过 `npm run test:harness` 不代表功能在产品里可用。判定方法是 grep 除自身测试之外的导入方：
+
+```bash
+grep -rl "harness/<name>.ts" app/src | grep -v "harness/<name>.ts$"
+```
+
+| 模块 | 状态 | 证据 / 接入点 |
+| --- | --- | --- |
+| `session.ts` `events.ts` `schemas.ts` `storage.ts` `kimi.ts` `prompts.ts` `agents.ts` `generation-graph.ts` `plan-cohesion.ts` `sandbox-runtime.ts` `settings.ts` `export.ts` `local-proxy.ts` | 已接线 | 主链路 |
+| `errors.ts` | 已接线 | `store.ts` 导入 `classifyError`，按 `surface` 分流到设置弹窗 / 聊天 / 卡片内联 |
+| `diversity.ts` | 已接线 | `session.ts` 检测并发出 `candidate.duplicate`；`store.ts` 标记卡片，`CandidateRail.tsx` 展示相似度和用户确认的「换一个」入口 |
+| `model-routing.ts` | **已实现，未接线** | 无导入方。接入点：`session.ts` 中六处 `model:` / `codeModel:` 传参（planner/draft/builder/fixer/reviewer/revision） |
+| `revisions.ts` | **已实现，未接线** | 无导入方。接入点：`store.ts` 的 `commitCandidate`、`undo`、`switchBranch` |
+
+未接线模块的含义：**产品当前没有这个能力**。`revisions.ts` 有完整的分支/回溯 DAG 和 16 个测试，但用户界面上不存在版本回溯；`model-routing.ts` 能做五角色分模型路由，但设置里仍然只有两个模型字段。
+
+
 ## 多 Agent 候选生成（LangGraph）
 
 ### 三个 specialist persona
@@ -76,9 +95,11 @@ START
 - 三个节点共用同一个 `runAgentNode` 实现；差异完全来自被 `Send` 携带进来的 `job`，因此节点名称是可观测性和拓扑语义，而不是三份逻辑。
 - 重试与失败降级在节点内部完成：`options.retries` 次重试后调用 `onFailed`，并返回 `{ results: [] }`，让其他 specialist 的成功结果照常扇入。
 - 取消由 `graph.invoke` 的 `signal` 和节点内的 `options.signal.aborted` 双重处理。LangGraph 仍会从 `invoke` 抛出 AbortError，`session.ts` 的 `generateCandidates()` catch 分支把「用户主动 Stop」识别为正常终止路径而不是失败。
-- 并发上限由 `maxConcurrency` 传给 `invoke`（`generation-graph.ts:72`），当前取自 `HarnessOptions.concurrency`。
+- 并发上限由 `maxConcurrency` 传给 `invoke`（`generation-graph.ts:72`）。注意它统计的是**图任务数**，不是 HTTP 请求数：每个候选任务会同时打开两条模型流（便宜的 draft + 完整的 builder）。因此 `session.ts` 用 `MAX_CONCURRENT_AGENT_JOBS = 3` 把真实并发请求压在 6 条以内，而不是直接透传 `HarnessOptions.concurrency`。
 
-`session.ts` 的 `generateCandidates()` 还在图之外做了一层波次划分（见 `leadVariantCount`）：单槽位页面首波跑 2 个 variant，多槽位页面每槽位首波只跑 1 个，其余 variant 作为第二次 `invokeAgentGraph` 调用。所有 variant 在开跑前就已经发出 `component.queued`，所以界面从第一帧就能看到完整设计团队。
+所有 specialist **同时开跑**，不再分波次。早期版本把生成划成两波（首波每槽位 1 个 variant，其余留到第二波），代价是第二波的候选卡会在界面上以 queued 状态静置整个首波时长——实测单个候选完整构建约 44 秒，三槽位页面里 slot 3 的卡要等到 88 秒后才开始动。用户看到的是一个卡住的产品，而不是一支正在工作的设计团队。所有 variant 在开跑前就已发出 `component.queued`，因此第一帧就能看到完整团队，并且它们随即真的都在跑。
+
+对应回归测试：`test/harness.test.mjs` 的 `candidate generation exposes the full team and starts every specialist at once`，断言三个 specialist 在任何一个完成之前都已启动。
 
 ### 动态 import 与包体
 
@@ -205,11 +226,41 @@ await session.chooseDirection(plan.visualDirections[0].id)
 
 TODO：确定 `.dna-*` 语义层要不要覆盖沙箱内的生成组件。若要，需要同时改三处：把语义类注入 `createSandboxDocument` 的 `<style>`、在 Builder 提示词里改成强制使用、在 `schemas.ts` 里加校验。在此之前，`design-decisions.md` 的语义类表格只适用于工具自身 UI。
 
-### 未决：首屏候选数是 3 还是 1
+### 已定：每槽位 3 个候选，但必须先过蓝图闸门
 
 `relume-openui-blueprint-research.md` 建议首轮每个槽位只生成 1 个候选，不自动补齐三个（该文 §3.2）。代码里两处说法也不一致：
 
 - `types.ts:205` 的注释写「首屏推荐 1，后续按需补齐」。
 - `store.ts` 实际用 `candidateCount: 3` 构造 `HarnessSession`；`session.ts` 的默认值同样是 3（`options.candidateCount ?? 3`）。
 
-缓解手段是 `session.ts` 中 `generateCandidates()` 的波次执行：`candidateCount` 决定的是「排队总数」，首波只真正发起 1～2 个请求（单槽位 2 个、多槽位每槽位 1 个），其余 variant 先以 queued 状态出现在候选栏。因此实际首轮调用量低于 `candidateCount` 的字面值，但「不自动补齐三个」这条建议并没有实现——第二波会在第一波结束后自动跑完剩余 variant。此处尚未定案，先记录。
+早期版本靠波次执行压首轮调用量，但后续 Agent 会静置数十秒。当前保留每槽位 3 个候选：三槽位页面 = 9 个候选 × 2 条流 = 最多 18 条模型流（受 `MAX_CONCURRENT_AGENT_JOBS` 限流，总量不变）。
+
+成本控制由页面蓝图确认负责：Planner 完成后先展示槽位、输入、输出、依赖、候选数与预计模型流，用户确认后才进入 Visual DNA 选择。调度顺序按 specialist round 交错，确保每个槽位先获得 Motion 候选，再补 Product、Explorer，避免第一个槽位独占并发。
+
+
+## 已补齐的高风险缺口
+
+以下均已对照代码核实，写明核实方式，避免下一个人误判。
+
+### 1. 运行时错误拦截
+
+`sandbox-runtime.ts` 现在对 `ready/error` 使用来源窗口、token、revisionId 三重校验；编译探针在 `ready` 后继续观察挂载期错误。`GeneratedCandidatePreview.tsx` 会把实际使用期间的 runtime error 回传 Store，触发 Fixer。修复期间 Canvas 保留最后成功 artifact；修复失败时继续显示上一帧并明确标记不可导出。
+
+### 2. 页面蓝图确认闸门
+
+Store 增加 `blueprint` 产品阶段。`plan.completed` 只创建空槽位并展示确认页，不调用 Builder；用户点击 `confirmBlueprint()` 后才进入底板选择。页面展示槽位职责、输入、输出、依赖、候选数和最多模型流数。
+
+### 3. 重复候选由用户决定是否重做
+
+`#reportDuplicateCandidates()` 检测到近似重复后，候选卡展示相似度与「换一个」。只有用户点击后才调用 `rerollCandidate()`；候选保持原 id 和 rail 位置，只替换 attempt/artifact，不自动产生额外费用。
+
+## 本轮已生效的行为变更
+
+均已在代码中核实，附核实位置。
+
+- **specialist 公平交错并发**：按 Motion round → Product round → Explorer round 排队，同一 round 跨槽位交错；`MAX_CONCURRENT_AGENT_JOBS = 3` 对应最多 6 条模型流。
+- **draft / builder 预览不再互相覆盖**：两条流曾共用一个 `publishedPreviewLength` 计数器，导致两份不同文档交替写进同一个预览，画面在两套布局间跳。现在分源计数，且 builder 一旦出图就永久接管（`session.ts` 的 `builderOwnsPreview`）。回归测试：`a slow draft cannot overwrite the builder preview it lost the race to`。
+- **`runId` / `attemptId` 陈旧防护**：被取代的生成批次和被替换的候选尝试不得再发事件或改状态。
+- **事件历史压缩**：`HarnessEventStream` 只保留每个候选最新一条 `preview.updated`，`source.ready` 后丢弃；`code.delta` 载荷清空（完整内容已随 artifact 保存）。实测 490 条发布 → 10 条保留。**注意**：顺序号改为基于「已恢复的最大 sequence」而非数组长度——压缩后条目数少于已发号数，用长度会重复发号。
+- **IndexedDB 写合并**：`harnessStorage.save` 对同一 session 的密集写入做防抖合并，最后一次快照获胜，且每个 `save()` 的 promise 都会兑现。
+- **`harnessError` 结构化**：由 `string` 改为 `{kind, surface, message, detail?, retryable}`。渲染时用 `.message`，`detail` 仅供调试，不要直接展示给用户。

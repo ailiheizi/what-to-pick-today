@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CandidateArtifact } from '../../lib/harness/types.ts'
-import { createSandboxDocument, isSandboxSelectionMessage } from '../../lib/harness/sandbox-runtime.ts'
+import { createSandboxDocument, isSandboxRuntimeMessage, isSandboxSelectionMessage } from '../../lib/harness/sandbox-runtime.ts'
 
 export default function GeneratedCandidatePreview({
   candidate,
@@ -8,12 +8,14 @@ export default function GeneratedCandidatePreview({
   title,
   selection,
   onSelect,
+  onRuntimeError,
 }: {
   candidate: CandidateArtifact
   cssVariables: Record<string, string>
   title?: string
   selection?: { slotId: string; candidateId: string }
   onSelect?: (selection: { slotId: string; candidateId: string }) => void
+  onRuntimeError?: (error: string) => void
 }) {
   const selectionSlotId = selection?.slotId
   const selectionCandidateId = selection?.candidateId
@@ -28,7 +30,7 @@ export default function GeneratedCandidatePreview({
     const bridge = selectionSlotId && selectionCandidateId
       ? { slotId: selectionSlotId, candidateId: selectionCandidateId, revisionId }
       : undefined
-    void createSandboxDocument(candidate, cssVariables, token, bridge)
+    void createSandboxDocument(candidate, cssVariables, token, bridge, revisionId)
       .then((document) => active && setResult({ key: renderKey, srcDoc: document, error: '', token, revisionId }))
       .catch((reason: unknown) => active && setResult({
         key: renderKey,
@@ -49,6 +51,19 @@ export default function GeneratedCandidatePreview({
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
   }, [onSelect, result.revisionId, result.token, selectionCandidateId, selectionSlotId])
+
+  useEffect(() => {
+    if (!result.token || !result.revisionId) return
+    const onMessage = (event: MessageEvent) => {
+      if (!isSandboxRuntimeMessage(event, iframeRef.current?.contentWindow ?? null, result.token, result.revisionId)) return
+      if (event.data.type !== 'error') return
+      const error = event.data.error ?? 'Sandbox runtime error'
+      setResult((current) => current.key === renderKey ? { ...current, error } : current)
+      onRuntimeError?.(error)
+    }
+    window.addEventListener('message', onMessage)
+    return () => window.removeEventListener('message', onMessage)
+  }, [onRuntimeError, renderKey, result.revisionId, result.token])
 
   if (result.key === renderKey && result.error) return <div className="p-3 text-[10px] text-rose-500 font-mono">{result.error}</div>
   if (result.key !== renderKey || !result.srcDoc) return <div className="h-full min-h-24 animate-pulse bg-neutral-100" />

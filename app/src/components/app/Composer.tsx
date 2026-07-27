@@ -7,6 +7,7 @@ import { playClick } from '../../lib/sound'
 const PLACEHOLDER: Record<string, string> = {
   idle: '描述你想做的界面，例如「帮我做一个 SaaS 增长数据看板」…',
   planning: 'Planner 规划中，可先记下补充要求…',
+  blueprint: '先确认页面蓝图；确认前不会生成候选…',
   direction: '先在画布中挑选一个风格底板…',
   generating: '补充要求，例如「我喜欢黑客风」…',
   reviewing: 'Reviewer 正在检查最终组合…',

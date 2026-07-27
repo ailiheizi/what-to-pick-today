@@ -229,6 +229,22 @@ function ephemeralKeysIn(input: Record<string, unknown>): string[] {
 }
 
 /**
+ * Runtime half of the ephemeral ban, applied at every entry point that accepts
+ * caller data. `EphemeralFree<T>` already blocks this at compile time, but the
+ * store is wired from JS-shaped spreads, so a compile-time-only guard would let
+ * `{ ...slotState }` through in practice.
+ */
+function rejectEphemeral(input: Record<string, unknown>): RevisionError | null {
+  const keys = ephemeralKeysIn(input)
+  if (keys.length === 0) return null
+  return {
+    code: 'ephemeral_field',
+    message: 'ephemeral UI state cannot be committed; only selections and the visual direction belong in a revision',
+    keys,
+  }
+}
+
+/**
  * Validate and copy a selection map.
  *
  * The copy matters: the caller usually hands over a live object derived from
@@ -309,10 +325,8 @@ export interface RootInput {
  */
 export function createRepository(input: EphemeralFree<RootInput>): Result<Repository> {
   if (!isPlainObject(input)) return err({ code: 'invalid_input', message: 'root input must be an object' })
-  const ephemeral = ephemeralKeysIn(input)
-  if (ephemeral.length > 0) {
-    return err({ code: 'ephemeral_field', message: 'ephemeral UI state cannot be committed', keys: ephemeral })
-  }
+  const ephemeral = rejectEphemeral(input)
+  if (ephemeral) return err(ephemeral)
   if (!isNonEmptyString(input.revisionId) || !isNonEmptyString(input.branchId) || !isNonEmptyString(input.branchName)) {
     return err({ code: 'invalid_input', message: 'root revisionId, branchId and branchName are required' })
   }
@@ -379,14 +393,8 @@ export function commit(repo: Repository, input: EphemeralFree<CommitInput>): Res
   const store = base.value
   if (!isPlainObject(input)) return err({ code: 'invalid_input', message: 'commit input must be an object' })
 
-  const ephemeral = ephemeralKeysIn(input)
-  if (ephemeral.length > 0) {
-    return err({
-      code: 'ephemeral_field',
-      message: 'ephemeral UI state cannot be committed; only selections and the visual direction belong in a revision',
-      keys: ephemeral,
-    })
-  }
+  const ephemeral = rejectEphemeral(input)
+  if (ephemeral) return err(ephemeral)
   if (!isNonEmptyString(input.id) || !isNonEmptyString(input.directionId) || !isNonEmptyString(input.label)) {
     return err({ code: 'invalid_input', message: 'commit id, directionId and label are required' })
   }
@@ -443,6 +451,8 @@ export function restore(
   const source = getRevision(base.value, revisionId)
   if (!source.ok) return source
   if (!isPlainObject(input)) return err({ code: 'invalid_input', message: 'restore input must be an object' })
+  const ephemeral = rejectEphemeral(input)
+  if (ephemeral) return err(ephemeral)
   return commit(base.value, {
     id: input.id,
     directionId: source.value.directionId,
@@ -521,6 +531,8 @@ export function fork(repo: Repository, input: EphemeralFree<ForkInput>): Result<
   if (!base.ok) return base
   const store = base.value
   if (!isPlainObject(input)) return err({ code: 'invalid_input', message: 'fork input must be an object' })
+  const ephemeral = rejectEphemeral(input)
+  if (ephemeral) return err(ephemeral)
   if (!isNonEmptyString(input.branchId) || !isNonEmptyString(input.name)) {
     return err({ code: 'invalid_input', message: 'fork branchId and name are required' })
   }
