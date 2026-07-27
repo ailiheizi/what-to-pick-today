@@ -36,9 +36,10 @@ export default function Composer() {
     stopped
     || (harnessMode === 'kimi' ? getActiveHarness()?.phase === 'selecting' : phase === 'generating')
   )
+  const canvasWide = phase === 'blueprint' || phase === 'direction'
 
   return (
-    <div className="absolute left-20 right-[17rem] bottom-4 z-30 w-auto xl:left-1/2 xl:right-auto xl:-translate-x-1/2 xl:w-[min(620px,60%)]">
+    <div className={`absolute left-20 bottom-4 z-30 w-auto xl:left-1/2 xl:right-auto xl:-translate-x-1/2 xl:w-[min(620px,60%)] ${canvasWide ? 'right-4' : 'right-[17rem]'}`}>
       <div
         className={`rounded-full border border-white/60 bg-white/85 backdrop-blur-xl shadow-2xl pl-5 pr-2 py-2 transition-transform duration-300 ${
           sent ? 'scale-[0.97]' : ''

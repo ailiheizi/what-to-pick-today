@@ -433,7 +433,7 @@ export default function CandidateRail() {
 
   if (phase !== 'generating' && phase !== 'reviewing' && phase !== 'done') {
     return (
-      <aside className="w-60 md:w-64 xl:w-72 shrink-0 m-3 mt-0 rounded-3xl border border-white/60 bg-white/70 backdrop-blur-xl shadow-lg flex flex-col items-center justify-center px-5 xl:px-6 text-center">
+      <aside className={`${phase === 'blueprint' || phase === 'direction' ? 'hidden' : 'flex'} w-60 md:w-64 xl:w-72 shrink-0 m-3 mt-0 rounded-3xl border border-white/60 bg-white/70 backdrop-blur-xl shadow-lg flex-col items-center justify-center px-5 xl:px-6 text-center`}>
         <div className="anim-float">
           <Layers size={22} className="text-neutral-300" />
         </div>

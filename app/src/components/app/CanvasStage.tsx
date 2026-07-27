@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Check, Coins, MousePointerClick, PartyPopper, ScanSearch, Wand2 } from 'lucide-react'
 import { useStore, type SlotState } from '../../lib/store'
+import type { Scenario, SlotDef } from '../../candidates/types'
 import { DIRECTIONS, getDirection } from '../../lib/dna'
 import { EXAMPLE_PROMPTS } from '../../lib/scenarios'
 import { ConfettiBurst, ConfettiRain, FloatingEmojis, PlayfulLoader } from './playful'
@@ -100,14 +101,166 @@ function PlanView() {
   )
 }
 
+type WireframeKind = 'nav' | 'sidebar' | 'stats' | 'chart' | 'table' | 'hero' | 'features' | 'cta' | 'atomic' | 'section'
+
+function wireframeKind(slot: SlotDef): WireframeKind {
+  const text = `${slot.id} ${slot.role}`
+  if (/nav|header|导航|顶栏|头部/i.test(text)) return 'nav'
+  if (/sidebar|侧栏/i.test(text)) return 'sidebar'
+  if (/stats|metric|指标|数据卡/i.test(text)) return 'stats'
+  if (/chart|graph|图表|趋势/i.test(text)) return 'chart'
+  if (/table|list|feed|列表|表格|订单/i.test(text)) return 'table'
+  if (/hero|首屏|主视觉/i.test(text)) return 'hero'
+  if (/feature|特性|功能/i.test(text)) return 'features'
+  if (/cta|行动|召唤|订阅/i.test(text)) return 'cta'
+  if (/计数|计算器|计时|播放器|表单|counter|calculator|timer|player|form/i.test(text)) return 'atomic'
+  return 'section'
+}
+
+function WireframeContent({ kind }: { kind: WireframeKind }) {
+  if (kind === 'nav') {
+    return (
+      <div className="flex h-full items-center gap-2 px-3">
+        <i className="h-3 w-12 rounded-full bg-neutral-700/70" />
+        <div className="ml-auto flex gap-1.5">{[20, 28, 22].map((width, index) => <i key={index} className="h-1.5 rounded-full bg-neutral-300" style={{ width }} />)}</div>
+        <i className="h-5 w-12 rounded-full bg-neutral-800/80" />
+      </div>
+    )
+  }
+  if (kind === 'sidebar') {
+    return <div className="flex h-full flex-col gap-2 px-3 pt-9">{[70, 82, 58, 76, 64].map((width, index) => <i key={index} className="h-2 rounded-full bg-neutral-300" style={{ width: `${width}%` }} />)}</div>
+  }
+  if (kind === 'stats') {
+    return <div className="grid h-full grid-cols-3 gap-2 px-3 pb-3 pt-8">{[0, 1, 2].map((item) => <div key={item} className="rounded-xl border border-neutral-200 bg-white p-2"><i className="block h-1.5 w-8 rounded-full bg-neutral-300" /><i className="mt-2 block h-4 w-12 rounded-md bg-neutral-700/70" /></div>)}</div>
+  }
+  if (kind === 'chart') {
+    return (
+      <div className="flex h-full items-end gap-2 px-4 pb-3 pt-9">
+        {[34, 58, 45, 76, 64, 88, 54, 72].map((height, index) => <i key={index} className="flex-1 rounded-t-md bg-gradient-to-t from-neutral-500/55 to-neutral-300/80" style={{ height: `${height}%` }} />)}
+      </div>
+    )
+  }
+  if (kind === 'table') {
+    return <div className="space-y-2 px-3 pb-3 pt-9">{[0, 1, 2, 3].map((row) => <div key={row} className="grid grid-cols-[1.2fr_0.8fr_0.6fr] gap-2"><i className="h-2 rounded-full bg-neutral-300" /><i className="h-2 rounded-full bg-neutral-200" /><i className="h-2 rounded-full bg-neutral-300" /></div>)}</div>
+  }
+  if (kind === 'hero') {
+    return (
+      <div className="grid h-full grid-cols-[1.05fr_0.95fr] gap-3 px-4 pb-4 pt-9">
+        <div className="flex flex-col justify-center"><i className="h-3 w-3/4 rounded-full bg-neutral-700/75" /><i className="mt-2 h-3 w-5/6 rounded-full bg-neutral-700/55" /><i className="mt-3 h-2 w-full rounded-full bg-neutral-200" /><i className="mt-1.5 h-2 w-4/5 rounded-full bg-neutral-200" /><i className="mt-4 h-6 w-20 rounded-full bg-neutral-800/80" /></div>
+        <div className="rounded-2xl border border-neutral-200 bg-white shadow-inner"><div className="m-3 h-[calc(100%-1.5rem)] rounded-xl bg-gradient-to-br from-neutral-100 to-neutral-200" /></div>
+      </div>
+    )
+  }
+  if (kind === 'features') {
+    return <div className="grid h-full grid-cols-3 gap-2 px-3 pb-3 pt-9">{[0, 1, 2].map((item) => <div key={item} className="rounded-xl border border-neutral-200 bg-white p-2"><i className="block size-5 rounded-lg bg-neutral-300" /><i className="mt-3 block h-2 w-3/4 rounded-full bg-neutral-600/60" /><i className="mt-2 block h-1.5 w-full rounded-full bg-neutral-200" /></div>)}</div>
+  }
+  if (kind === 'cta') {
+    return <div className="flex h-full flex-col items-center justify-center px-4 pt-6"><i className="h-3 w-2/3 rounded-full bg-neutral-700/70" /><i className="mt-2 h-2 w-4/5 rounded-full bg-neutral-200" /><i className="mt-4 h-6 w-24 rounded-full bg-neutral-800/80" /></div>
+  }
+  if (kind === 'atomic') {
+    return <div className="mx-auto flex h-full w-4/5 flex-col items-center justify-center px-4 pt-6"><i className="h-7 w-24 rounded-xl bg-neutral-700/75" /><div className="mt-4 grid w-full grid-cols-3 gap-2">{[0, 1, 2, 3, 4, 5].map((item) => <i key={item} className="aspect-square rounded-xl border border-neutral-200 bg-white" />)}</div></div>
+  }
+  return <div className="grid h-full grid-cols-2 gap-3 px-4 pb-4 pt-9"><div className="rounded-xl bg-white shadow-inner" /><div className="space-y-2 pt-2"><i className="block h-3 w-3/4 rounded-full bg-neutral-600/60" /><i className="block h-2 w-full rounded-full bg-neutral-200" /><i className="block h-2 w-4/5 rounded-full bg-neutral-200" /></div></div>
+}
+
+function WireframeSlot({ slot, index, active, onSelect, className = '' }: { slot: SlotDef; index: number; active: boolean; onSelect: () => void; className?: string }) {
+  const kind = wireframeKind(slot)
+  return (
+    <button
+      type="button"
+      data-wireframe-slot={slot.id}
+      aria-pressed={active}
+      onClick={onSelect}
+      className={`group relative min-h-0 overflow-hidden rounded-2xl border text-left transition-all duration-300 ${active ? 'border-indigo-500 bg-indigo-50/80 shadow-[0_0_0_3px_rgba(99,102,241,0.14)]' : 'border-neutral-200 bg-neutral-50 hover:-translate-y-0.5 hover:border-neutral-400 hover:shadow-md'} ${className}`}
+    >
+      <span className={`absolute left-2.5 top-2 z-10 flex items-center gap-1.5 rounded-full px-2 py-1 text-[8px] font-black shadow-sm ${active ? 'bg-indigo-600 text-white' : 'bg-white text-neutral-600'}`}>
+        <b className="font-mono">{String(index + 1).padStart(2, '0')}</b>{slot.role}
+      </span>
+      <WireframeContent kind={kind} />
+    </button>
+  )
+}
+
+function BlueprintWireframe({ scenario, activeSlotId, onSelect }: { scenario: Scenario; activeSlotId: string; onSelect: (slotId: string) => void }) {
+  const indexed = new Map(scenario.slots.map((slot, index) => [slot.id, index]))
+  const roles = scenario.slots.map((slot) => `${slot.id} ${slot.role}`).join(' ')
+  const inferredLayout = scenario.layout !== 'freeform'
+    ? scenario.layout
+    : /hero|主视觉|cta|行动召唤/i.test(roles)
+      ? 'landing'
+      : /sidebar|侧栏|chart|图表|table|列表|指标/i.test(roles)
+        ? 'dashboard'
+        : 'freeform'
+  const find = (kind: WireframeKind) => scenario.slots.find((slot) => wireframeKind(slot) === kind)
+  const renderSlot = (slot: SlotDef | undefined, className: string) => slot ? (
+    <WireframeSlot key={slot.id} slot={slot} index={indexed.get(slot.id) ?? 0} active={activeSlotId === slot.id} onSelect={() => onSelect(slot.id)} className={className} />
+  ) : null
+
+  let body: React.ReactNode
+  if (inferredLayout === 'dashboard') {
+    const header = find('nav')
+    const sidebar = find('sidebar')
+    const stats = find('stats')
+    const chart = find('chart')
+    const table = find('table')
+    const used = new Set([header, sidebar, stats, chart, table].filter(Boolean).map((slot) => slot!.id))
+    const remaining = scenario.slots.filter((slot) => !used.has(slot.id))
+    body = (
+      <div className="flex h-full flex-col gap-2">
+        {renderSlot(header, 'h-[58px] shrink-0')}
+        <div className="flex min-h-0 flex-1 gap-2">
+          {renderSlot(sidebar, 'w-[24%] shrink-0')}
+          <div className="flex min-w-0 flex-1 flex-col gap-2">
+            {renderSlot(stats, 'h-[82px] shrink-0')}
+            {renderSlot(chart, 'min-h-[120px] flex-[1.25]')}
+            {renderSlot(table, 'min-h-[88px] flex-1')}
+            {remaining.map((slot) => renderSlot(slot, 'min-h-[76px] flex-1'))}
+          </div>
+        </div>
+      </div>
+    )
+  } else if (inferredLayout === 'landing') {
+    body = (
+      <div className="flex h-full flex-col gap-2">
+        {scenario.slots.map((slot) => {
+          const kind = wireframeKind(slot)
+          const height = kind === 'nav' ? 'h-[52px] shrink-0' : kind === 'hero' ? 'flex-[1.5] min-h-[145px]' : kind === 'features' ? 'flex-1 min-h-[112px]' : kind === 'cta' ? 'h-[88px] shrink-0' : 'min-h-[84px] flex-1'
+          return renderSlot(slot, height)
+        })}
+      </div>
+    )
+  } else {
+    const single = scenario.slots.length === 1
+    body = (
+      <div className={`grid h-full gap-2 ${single ? 'place-items-center' : 'grid-cols-12 content-start'}`}>
+        {scenario.slots.map((slot) => renderSlot(slot, single ? 'h-[300px] w-full max-w-[360px]' : `${slot.width === 'fixed' ? 'col-span-4' : 'col-span-8'} min-h-[120px]`))}
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded-[26px] border border-neutral-200 bg-neutral-100 p-2.5 shadow-inner">
+      <div className="mb-2 flex items-center gap-1.5 px-1">
+        <i className="size-2 rounded-full bg-rose-300" /><i className="size-2 rounded-full bg-amber-300" /><i className="size-2 rounded-full bg-emerald-300" />
+        <span className="ml-2 truncate text-[8px] font-bold uppercase tracking-[0.18em] text-neutral-400">{scenario.projectName} · local wireframe</span>
+      </div>
+      <div className={`overflow-hidden rounded-[20px] bg-white p-2 ${inferredLayout === 'landing' ? 'h-[460px]' : 'h-[400px]'}`}>
+        {body}
+      </div>
+    </div>
+  )
+}
+
 function BlueprintView() {
   const { scenario, confirmBlueprint, harnessMode } = useStore()
+  const [activeSlotId, setActiveSlotId] = useState('')
   if (!scenario) return null
+  const focusedSlotId = activeSlotId || scenario.slots[0]?.id || ''
   const candidateCount = scenario.slots.length * 3
   const streamCount = candidateCount * 2
   return (
     <div className="h-full overflow-y-auto px-6 py-8">
-      <div className="anim-pop mx-auto w-full max-w-3xl rounded-[28px] border border-white/70 bg-white/80 p-6 shadow-xl backdrop-blur-xl">
+      <div className="anim-pop mx-auto w-full max-w-5xl rounded-[28px] border border-white/70 bg-white/80 p-6 shadow-xl backdrop-blur-xl">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-neutral-400">Planner Blueprint</div>
@@ -120,20 +273,53 @@ function BlueprintView() {
             <div className="text-[9px] text-amber-700">最多 {streamCount} 条模型流 · 并发受限</div>
           </div>
         </div>
-        <div className="mt-5 grid gap-3 sm:grid-cols-2">
-          {scenario.slots.map((slot, index) => (
-            <div key={slot.id} className="anim-slide-l rounded-2xl border border-neutral-200/80 bg-white p-4" style={{ animationDelay: `${index * 0.08}s` }}>
-              <div className="flex items-center gap-2">
-                <span className="flex size-6 items-center justify-center rounded-full bg-neutral-900 text-[10px] font-black text-white">{index + 1}</span>
-                <div className="text-[12px] font-extrabold text-neutral-800">{slot.role}</div>
+        <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(320px,0.95fr)_minmax(340px,1.05fr)]">
+          <section>
+            <div className="mb-2 flex items-center justify-between gap-3 px-1">
+              <div>
+                <div className="text-[10px] font-black text-neutral-800">整页低保真框架</div>
+                <div className="mt-0.5 text-[8px] text-neutral-400">由 Planner 结果本地绘制 · 0 次 Builder 调用</div>
               </div>
-              <div className="mt-3 space-y-1 text-[9px] leading-relaxed text-neutral-500">
-                <div><span className="font-bold text-neutral-700">输入：</span>{slot.inputs.join(' · ') || '无外部输入'}</div>
-                <div><span className="font-bold text-neutral-700">输出：</span>{slot.outputs.join(' · ') || '仅展示'}</div>
-                <div><span className="font-bold text-neutral-700">依赖：</span>{slot.dependencies.join(' · ') || '独立槽位'}</div>
-              </div>
+              <span className="rounded-full bg-emerald-100 px-2 py-1 text-[8px] font-bold text-emerald-700">立即可见</span>
             </div>
-          ))}
+            <BlueprintWireframe scenario={scenario} activeSlotId={focusedSlotId} onSelect={setActiveSlotId} />
+            <div className="mt-2 text-center text-[8px] text-neutral-400">点击线框区块，查看对应组件合同</div>
+          </section>
+
+          <section>
+            <div className="mb-2 flex items-center justify-between gap-3 px-1">
+              <div>
+                <div className="text-[10px] font-black text-neutral-800">组件合同</div>
+                <div className="mt-0.5 text-[8px] text-neutral-400">职责与接口将在候选之间保持一致</div>
+              </div>
+              <span className="font-mono text-[8px] text-neutral-400">{scenario.slots.length} slots</span>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
+              {scenario.slots.map((slot, index) => {
+                const active = focusedSlotId === slot.id
+                return (
+                  <button
+                    type="button"
+                    key={slot.id}
+                    onClick={() => setActiveSlotId(slot.id)}
+                    className={`anim-slide-l rounded-2xl border p-4 text-left transition-all duration-300 ${active ? 'border-indigo-400 bg-indigo-50/70 shadow-[0_0_0_3px_rgba(99,102,241,0.1)]' : 'border-neutral-200/80 bg-white hover:border-neutral-400 hover:shadow-md'}`}
+                    style={{ animationDelay: `${index * 0.08}s` }}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className={`flex size-6 items-center justify-center rounded-full text-[10px] font-black ${active ? 'bg-indigo-600 text-white' : 'bg-neutral-900 text-white'}`}>{index + 1}</span>
+                      <div className="text-[12px] font-extrabold text-neutral-800">{slot.role}</div>
+                      <span className="ml-auto text-[8px] font-bold text-neutral-400">{slot.width === 'fixed' ? '固定区' : '自适应区'}</span>
+                    </div>
+                    <div className="mt-3 space-y-1 text-[9px] leading-relaxed text-neutral-500">
+                      <div><span className="font-bold text-neutral-700">输入：</span>{slot.inputs.join(' · ') || '无外部输入'}</div>
+                      <div><span className="font-bold text-neutral-700">输出：</span>{slot.outputs.join(' · ') || '仅展示'}</div>
+                      <div><span className="font-bold text-neutral-700">依赖：</span>{slot.dependencies.join(' · ') || '独立槽位'}</div>
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          </section>
         </div>
         <div className="mt-5 flex flex-col items-center justify-between gap-3 rounded-2xl bg-neutral-950 px-4 py-3 text-white sm:flex-row">
           <div className="text-[10px] leading-relaxed text-neutral-300">

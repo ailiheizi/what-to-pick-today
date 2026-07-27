@@ -250,6 +250,16 @@ TODO：确定 `.dna-*` 语义层要不要覆盖沙箱内的生成组件。若要
 
 Store 增加 `blueprint` 产品阶段。`plan.completed` 只创建空槽位并展示确认页，不调用 Builder；用户点击 `confirmBlueprint()` 后才进入底板选择。页面展示槽位职责、输入、输出、依赖、候选数和最多模型流数。
 
+蓝图页现在还会根据 Planner 结果在本地立即绘制整页低保真 wireframe，不增加模型调用：
+
+- Dashboard 自动组合顶栏、侧栏、指标、图表、列表等空间关系。
+- Landing Page 自动组合导航、Hero、特性区和 CTA。
+- 远程 Planner 产生的 freeform 页面会根据槽位职责推断 Dashboard / Landing；无法归类时按 fixed / fluid 宽度绘制自由布局。
+- 原子组件会绘制为一个完整交互区域，不再只显示合同文字。
+- 点击 wireframe 区块会同步聚焦对应组件合同，方便在确认前检查职责、输入和输出。
+
+这层 wireframe 完全由 `Scenario / SlotDef` 绘制，不执行生成代码，也不进入 iframe。真实浏览器验证中，多槽位 SaaS 看板在 Planner 完成后立即显示“指标卡 → 趋势图 → 订单列表”整页框架；确认前 Builder 调用数仍为 0。
+
 ### 3. 重复候选由用户决定是否重做
 
 `#reportDuplicateCandidates()` 检测到近似重复后，候选卡展示相似度与「换一个」。只有用户点击后才调用 `rerollCandidate()`；候选保持原 id 和 rail 位置，只替换 attempt/artifact，不自动产生额外费用。
