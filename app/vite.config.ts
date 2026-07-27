@@ -1,6 +1,7 @@
 import path from "path"
 import react from "@vitejs/plugin-react"
 import { defineConfig, loadEnv, type Plugin, type ProxyOptions } from "vite"
+import { HttpsProxyAgent } from 'https-proxy-agent'
 import { inspectAttr } from 'kimi-plugin-inspect-react'
 import { isAllowedLocalProxyOrigin, LOCAL_MODEL_PROXY_PATH, rewriteModelProxyPath, splitModelApiBase } from './src/lib/harness/local-proxy'
 
@@ -26,6 +27,7 @@ export default defineConfig(({ mode }) => {
   const localEnv = loadEnv(mode, workspaceRoot, '')
   const upstreamBase = (process.env.AI_PROXY_BASE_URL ?? localEnv.AI_PROXY_BASE_URL)?.trim()
   const upstreamKey = (process.env.AI_PROXY_API_KEY ?? localEnv.AI_PROXY_API_KEY)?.trim()
+  const outboundProxy = (process.env.HTTPS_PROXY ?? process.env.https_proxy)?.trim()
   let modelProxy: Record<string, string | ProxyOptions> | undefined
 
   if (upstreamBase) {
@@ -33,15 +35,11 @@ export default defineConfig(({ mode }) => {
     modelProxy = {
       [LOCAL_MODEL_PROXY_PATH]: {
         target,
+        agent: outboundProxy ? new HttpsProxyAgent(outboundProxy) : undefined,
         changeOrigin: true,
         secure: true,
+        headers: upstreamKey ? { authorization: `Bearer ${upstreamKey}` } : undefined,
         rewrite: (requestPath) => rewriteModelProxyPath(requestPath, prefix),
-        configure(proxy) {
-          if (!upstreamKey) return
-          proxy.on('proxyReq', (proxyRequest) => {
-            proxyRequest.setHeader('authorization', `Bearer ${upstreamKey}`)
-          })
-        },
       },
     }
   }
