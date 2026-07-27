@@ -482,13 +482,53 @@ function DirectionPicker() {
 
 /* ---------------- 槽位外壳：随机加载 / 试穿 / 已确认 ---------------- */
 
+function InstantSlotFrame({ slot, active }: { slot: SlotState; active: boolean }) {
+  const role = `${slot.def.id} ${slot.def.role}`
+  const isMetrics = /metric|stats|指标|数据卡/i.test(role)
+  const isChart = /chart|trend|graph|趋势|图表/i.test(role)
+  const isTable = /table|list|order|列表|订单|表格/i.test(role)
+  const isHero = /hero|首屏|主视觉/i.test(role)
+  const line = 'linear-gradient(90deg, color-mix(in srgb, var(--dna-text) 9%, transparent), color-mix(in srgb, var(--dna-accent) 18%, transparent), color-mix(in srgb, var(--dna-text) 9%, transparent))'
+  return (
+    <div className="relative min-h-36 overflow-hidden rounded-[inherit] p-4" style={{ background: 'var(--dna-surface)', color: 'var(--dna-text)' }}>
+      <div className="absolute inset-0 opacity-50" style={{ background: 'radial-gradient(circle at 18% 12%, color-mix(in srgb, var(--dna-accent) 18%, transparent), transparent 38%)' }} />
+      <div className="absolute inset-y-0 -left-1/3 w-1/3 animate-[slide_1.8s_ease-in-out_infinite] bg-gradient-to-r from-transparent via-white/55 to-transparent" />
+      <div className="relative flex items-center justify-between gap-3">
+        <div>
+          <div className="text-[10px] font-black opacity-70">{slot.def.role}</div>
+          <div className="mt-1 text-[8px] opacity-40">页面框架已就位 · AI 正在填充细节</div>
+        </div>
+        <span className={`rounded-full px-2 py-1 text-[8px] font-bold ${active ? 'bg-neutral-900 text-white' : 'bg-white/70 text-neutral-500'}`}>即时框架</span>
+      </div>
+      <div className="relative mt-4">
+        {isMetrics ? (
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {[0, 1, 2, 3].map((item) => <div key={item} className="h-16 rounded-2xl border border-white/60 bg-white/45 p-2"><div className="h-2 w-2/5 rounded-full" style={{ background: line }} /><div className="mt-3 h-4 w-3/5 rounded-full" style={{ background: line }} /></div>)}
+          </div>
+        ) : isChart ? (
+          <div className="flex h-28 items-end gap-2 rounded-2xl border border-white/60 bg-white/40 px-3 pb-3 pt-6">
+            {[42, 68, 54, 88, 64, 96, 72, 84].map((height, item) => <div key={item} className="flex-1 rounded-t-lg opacity-55 transition-all" style={{ height: `${height}%`, background: 'var(--dna-accent)', animation: `pulse 1.4s ease-in-out ${item * 70}ms infinite alternate` }} />)}
+          </div>
+        ) : isTable ? (
+          <div className="space-y-2 rounded-2xl border border-white/60 bg-white/40 p-3">
+            {[0, 1, 2, 3].map((item) => <div key={item} className="flex items-center gap-3 rounded-xl bg-white/45 px-3 py-2"><div className="size-7 rounded-full" style={{ background: line }} /><div className="h-2 flex-1 rounded-full" style={{ background: line }} /><div className="h-2 w-14 rounded-full" style={{ background: line }} /></div>)}
+          </div>
+        ) : isHero ? (
+          <div className="flex min-h-40 items-center justify-between gap-6 rounded-3xl border border-white/60 bg-white/35 p-5"><div className="w-3/5 space-y-3"><div className="h-5 w-4/5 rounded-full" style={{ background: line }} /><div className="h-2 w-full rounded-full" style={{ background: line }} /><div className="h-8 w-24 rounded-full" style={{ background: 'var(--dna-accent)', opacity: 0.45 }} /></div><div className="aspect-square w-24 rounded-3xl" style={{ background: line }} /></div>
+        ) : (
+          <div className="grid min-h-28 grid-cols-[1.3fr_0.7fr] gap-3"><div className="rounded-2xl border border-white/60 bg-white/40 p-3"><div className="h-3 w-2/3 rounded-full" style={{ background: line }} /><div className="mt-3 h-2 w-full rounded-full" style={{ background: line }} /><div className="mt-2 h-2 w-4/5 rounded-full" style={{ background: line }} /></div><div className="rounded-2xl border border-white/60 bg-white/40" /></div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function SlotShell({ slot }: { slot: SlotState }) {
   const { setActiveSlot, tryOn, reportCandidateRuntimeError, activeSlotId, bursts } = useStore()
   // 试穿优先：即使已扣合，试穿其他候选也即时预览（不替换已确认内容）
   const activeCand = slot.candidates.find((c) => c.def.id === (slot.tryOnId ?? slot.selectedId))
   const streaming = slot.candidates.find((c) => c.status === 'streaming' || c.status === 'compiling')
   const failed = slot.candidates.find((c) => c.status === 'failed')
-  const queuedSeed = slot.candidates[0]?.seed ?? 1
   const renderedCount = slot.candidates.filter((c) => c.status === 'rendered').length
   const isActive = activeSlotId === slot.def.id
   const selected = slot.status === 'selected'
@@ -579,8 +619,12 @@ function SlotShell({ slot }: { slot: SlotState }) {
                 title={`${slot.def.role} · API 流式草图`}
               />
             ) : (
-              <div className="px-3 pt-3">
-                <PlayfulLoader seed={streaming.seed} label={streaming.status === 'compiling' ? '编译组装中' : '等待 API 第一帧'} />
+              <div className="relative">
+                <InstantSlotFrame slot={slot} active={isActive} />
+                <div className="absolute bottom-3 left-1/2 flex -translate-x-1/2 items-center gap-2 whitespace-nowrap rounded-full border border-white/70 bg-white/85 px-3 py-2 text-[9px] font-bold text-neutral-600 shadow-lg backdrop-blur">
+                  <span className="size-2 animate-pulse rounded-full bg-fuchsia-500" />
+                  {streaming.status === 'compiling' ? '正在把源码组装进框架' : 'AI 正在覆盖即时框架'}
+                </div>
                 <pre className="px-2 pb-2 text-[9px] leading-relaxed font-mono text-neutral-400 whitespace-pre-wrap break-all max-h-16 overflow-hidden opacity-70">
                   {streaming.code.slice(0, streaming.progress).split('\n').slice(-4).join('\n')}
                   <span className="inline-block w-1.5 h-3 bg-neutral-400 align-middle animate-pulse" />
@@ -593,7 +637,7 @@ function SlotShell({ slot }: { slot: SlotState }) {
               <div className="mt-1 text-[9px] text-rose-400 line-clamp-2">{failed.error ?? '可以点击重新生成继续'}</div>
             </div>
           ) : (
-            <PlayfulLoader seed={queuedSeed + 31} label="排队等待灵感" />
+            <InstantSlotFrame slot={slot} active={isActive} />
           )}
         </div>
       )}
@@ -719,7 +763,7 @@ export default function CanvasStage() {
         {(phase === 'generating' || phase === 'reviewing' || phase === 'done') && scenario && (
           <div className="min-h-full px-5 pt-4 pb-32">
             <div
-              className="anim-pop relative mx-auto max-w-4xl rounded-[28px] overflow-hidden shadow-2xl transition-colors duration-500 border border-white/50"
+              className="anim-frame-in relative mx-auto max-w-4xl rounded-[28px] overflow-hidden shadow-2xl transition-colors duration-500 border border-white/50"
               style={{
                 ...(vars as React.CSSProperties),
                 background: 'var(--dna-bg)',
