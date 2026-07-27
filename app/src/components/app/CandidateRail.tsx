@@ -433,7 +433,7 @@ export default function CandidateRail() {
 
   if (phase !== 'generating' && phase !== 'reviewing' && phase !== 'done') {
     return (
-      <aside className="w-72 shrink-0 m-3 mt-0 rounded-3xl border border-white/60 bg-white/70 backdrop-blur-xl shadow-lg flex flex-col items-center justify-center px-6 text-center">
+      <aside className="w-60 md:w-64 xl:w-72 shrink-0 m-3 mt-0 rounded-3xl border border-white/60 bg-white/70 backdrop-blur-xl shadow-lg flex flex-col items-center justify-center px-5 xl:px-6 text-center">
         <div className="anim-float">
           <Layers size={22} className="text-neutral-300" />
         </div>
@@ -450,7 +450,7 @@ export default function CandidateRail() {
   }
 
   return (
-    <aside className="w-72 shrink-0 m-3 mt-0 rounded-3xl border border-white/60 bg-white/70 backdrop-blur-xl shadow-lg flex flex-col min-h-0 overflow-hidden">
+    <aside className="w-60 md:w-64 xl:w-72 shrink-0 m-3 mt-0 rounded-3xl border border-white/60 bg-white/70 backdrop-blur-xl shadow-lg flex flex-col min-h-0 overflow-hidden">
       {/* 槽位切换 */}
       <div className="px-3 pt-3 pb-2">
         <div className="text-[10px] font-semibold tracking-widest uppercase text-neutral-400 mb-2">槽位 · 逐个挑选</div>

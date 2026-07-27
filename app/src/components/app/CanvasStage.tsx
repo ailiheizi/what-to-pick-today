@@ -11,13 +11,13 @@ import StreamingHtmlPreview from './StreamingHtmlPreview'
 
 function Welcome({ onPick }: { onPick: (p: string) => void }) {
   return (
-    <div className="relative h-full flex flex-col items-center justify-center px-8 text-center overflow-hidden">
+    <div className="relative h-full flex flex-col items-center justify-center px-5 md:px-8 text-center overflow-hidden">
       <FloatingEmojis />
       <div className="anim-pop text-[11px] font-bold tracking-[0.35em] uppercase text-neutral-500">
         What will you pick today?
       </div>
       <h1
-        className="anim-bounce-in mt-4 text-6xl font-black tracking-tight text-neutral-900"
+        className="anim-bounce-in mt-4 text-5xl md:text-6xl font-black tracking-tight text-neutral-900"
         style={{ animationDelay: '0.1s' }}
       >
         今天
@@ -29,19 +29,19 @@ function Welcome({ onPick }: { onPick: (p: string) => void }) {
       <p className="anim-pop mt-4 max-w-md text-sm leading-relaxed text-neutral-500" style={{ animationDelay: '0.2s' }}>
         一个选择驱动的 AI 原生 UI 生成工具。AI 并发创造可能性，你像挑衣服一样挑选候选，系统像拼积木一样实时拼合页面。
       </p>
-      <div className="mt-8 flex flex-col sm:flex-row gap-3">
+      <div className="mt-8 flex w-full max-w-lg flex-col lg:max-w-none lg:flex-row lg:justify-center gap-3">
         {EXAMPLE_PROMPTS.map((p, i) => (
           <button
             key={p}
             onClick={() => onPick(p)}
-            className="hover-pop anim-slide-l px-5 py-3 rounded-full border border-white/60 bg-white/80 backdrop-blur text-xs font-medium text-neutral-600 hover:text-neutral-900 shadow-md"
+            className="hover-pop anim-slide-l w-full lg:w-auto px-5 py-3 rounded-full border border-white/60 bg-white/80 backdrop-blur text-xs font-medium text-neutral-600 hover:text-neutral-900 shadow-md"
             style={{ animationDelay: `${0.3 + i * 0.12}s` }}
           >
             ✨ {p}
           </button>
         ))}
       </div>
-      <div className="mt-12 grid grid-cols-3 gap-8 text-[10px] text-neutral-500">
+      <div className="mt-10 md:mt-12 grid grid-cols-3 gap-4 md:gap-8 text-[10px] text-neutral-500">
         {[
           ['3–6', '并发组件任务', 'anim-float'],
           ['×3', '每槽位候选', 'anim-float'],

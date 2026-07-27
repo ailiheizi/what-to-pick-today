@@ -38,18 +38,18 @@ export default function TopBar() {
   const canReset = phase !== 'idle' || Boolean(prompt || scenario || slots.length || tokensStreamed)
 
   return (
-    <header className="relative z-30 flex items-center gap-3 px-5 py-3">
+    <header className="relative z-30 flex items-center gap-2 sm:gap-3 px-3 sm:px-5 py-3">
       <div className="flex items-center gap-2.5 group cursor-default">
-        <div className="w-9 h-9 rounded-2xl bg-neutral-900 flex items-center justify-center shadow-lg transition-transform duration-300 group-hover:rotate-12 group-hover:scale-110">
+        <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-2xl bg-neutral-900 flex items-center justify-center shadow-lg transition-transform duration-300 group-hover:rotate-12 group-hover:scale-110">
           <Sparkles size={16} className="text-amber-300 transition-transform duration-500 group-hover:scale-125" />
         </div>
         <div>
           <div className="font-black text-[16px] tracking-tight leading-none">今天选什么？</div>
-          <div className="text-[10px] text-neutral-500 mt-0.5">AI 负责生成，人负责挑选</div>
+          <div className="hidden md:block text-[10px] text-neutral-500 mt-0.5">AI 负责生成，人负责挑选</div>
         </div>
       </div>
 
-      <div className="ml-2 flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white/70 backdrop-blur border border-white/60 shadow-sm">
+      <div className="ml-0 sm:ml-2 flex items-center gap-2 px-3 sm:px-3.5 py-1.5 rounded-full bg-white/70 backdrop-blur border border-white/60 shadow-sm">
         <span className={`w-2 h-2 rounded-full ${busy ? 'bg-emerald-500 animate-ping' : phase === 'done' ? 'bg-emerald-500' : 'bg-neutral-300'}`} />
         <span className="text-[11px] font-medium text-neutral-600">{PHASE_LABEL[phase]}</span>
         {tokensStreamed > 0 && phase !== 'idle' && (
@@ -57,7 +57,7 @@ export default function TopBar() {
         )}
       </div>
 
-      <div className="ml-auto flex items-center gap-2">
+      <div className="ml-auto flex items-center gap-1.5 sm:gap-2">
         <button
           onClick={openSettings}
           title="配置 AI API"

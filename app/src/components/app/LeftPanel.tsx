@@ -16,7 +16,7 @@ export default function LeftPanel() {
   const canBranch = !!directionId
 
   return (
-    <aside className="w-56 shrink-0 m-3 mt-0 rounded-3xl border border-white/60 bg-white/70 backdrop-blur-xl shadow-lg flex flex-col min-h-0 overflow-hidden">
+    <aside className="hidden xl:flex w-56 shrink-0 m-3 mt-0 rounded-3xl border border-white/60 bg-white/70 backdrop-blur-xl shadow-lg flex-col min-h-0 overflow-hidden">
       {/* 项目 */}
       <div className="px-4 pt-4 pb-3">
         <div className="text-[10px] font-semibold tracking-widest uppercase text-neutral-400 flex items-center gap-1.5">
