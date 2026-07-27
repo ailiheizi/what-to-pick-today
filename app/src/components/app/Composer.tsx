@@ -38,6 +38,10 @@ export default function Composer() {
   )
   const canvasWide = phase === 'blueprint' || phase === 'direction'
 
+  // 蓝图页的核心动作是检查结构并确认。固定的大输入框会遮住合同和确认按钮，
+  // 对话记录仍可从左下角 ChatDock 打开，因此此阶段把 Composer 完全让位给画布。
+  if (phase === 'blueprint') return null
+
   return (
     <div className={`absolute left-20 bottom-4 z-30 w-auto xl:left-1/2 xl:right-auto xl:-translate-x-1/2 xl:w-[min(620px,60%)] ${canvasWide ? 'right-4' : 'right-[17rem]'}`}>
       <div

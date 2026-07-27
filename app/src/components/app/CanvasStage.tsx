@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Check, Coins, MousePointerClick, PartyPopper, ScanSearch, Wand2 } from 'lucide-react'
+import { ArrowRight, Check, Coins, Link2, MousePointerClick, PartyPopper, ScanSearch, Wand2 } from 'lucide-react'
 import { useStore, type SlotState } from '../../lib/store'
 import type { Scenario, SlotDef } from '../../candidates/types'
 import { DIRECTIONS, getDirection } from '../../lib/dna'
@@ -103,6 +103,64 @@ function PlanView() {
 
 type WireframeKind = 'nav' | 'sidebar' | 'stats' | 'chart' | 'table' | 'hero' | 'features' | 'cta' | 'atomic' | 'section'
 
+type BlueprintBinding = {
+  from: SlotDef
+  to: SlotDef
+  signal: string
+  mode: 'signal' | 'context'
+}
+
+const GENERIC_SIGNAL_TOKENS = new Set(['on', 'change', 'changed', 'select', 'selected', 'value', 'data', 'id', 'string', 'array', 'object', 'number', 'boolean'])
+
+function signalName(value: string) {
+  return value.split(/[:(]/, 1)[0].trim()
+}
+
+function signalTokens(value: string) {
+  return signalName(value)
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9\u4e00-\u9fff]+/)
+    .filter((token) => token.length > 1 && !GENERIC_SIGNAL_TOKENS.has(token))
+}
+
+function inferBlueprintBindings(slots: SlotDef[]): BlueprintBinding[] {
+  const bindings: BlueprintBinding[] = []
+  for (const from of slots) {
+    for (const output of from.outputs) {
+      const outputTokens = signalTokens(output)
+      if (outputTokens.length === 0) continue
+      const matches: Array<{ to: SlotDef; score: number }> = []
+      for (const to of slots) {
+        if (to.id === from.id) continue
+        const score = Math.max(0, ...to.inputs.map((input) => {
+          const inputTokens = signalTokens(input)
+          return outputTokens.filter((token) => inputTokens.includes(token)).length
+        }))
+        if (score > 0) matches.push({ to, score })
+      }
+      matches.sort((a, b) => b.score - a.score)
+      for (const match of matches) {
+        if (!bindings.some((binding) => binding.from.id === from.id && binding.to.id === match.to.id)) {
+          bindings.push({ from, to: match.to, signal: signalName(output), mode: 'signal' })
+        }
+      }
+    }
+  }
+  if (bindings.length > 0) return bindings.slice(0, 4)
+
+  // Some otherwise valid planners return display-only contracts. The page is
+  // still one composition, so show the ordering/context relationship without
+  // pretending an event binding exists. A later plan with matching I/O names
+  // automatically replaces these softer links with precise signal bindings.
+  return slots.slice(0, -1).map((from, index) => ({
+    from,
+    to: slots[index + 1],
+    signal: '共享页面上下文',
+    mode: 'context' as const,
+  })).slice(0, 3)
+}
+
 function wireframeKind(slot: SlotDef): WireframeKind {
   const text = `${slot.id} ${slot.role}`
   if (/nav|header|导航|顶栏|头部/i.test(text)) return 'nav'
@@ -163,7 +221,7 @@ function WireframeContent({ kind }: { kind: WireframeKind }) {
   return <div className="grid h-full grid-cols-2 gap-3 px-4 pb-4 pt-9"><div className="rounded-xl bg-white shadow-inner" /><div className="space-y-2 pt-2"><i className="block h-3 w-3/4 rounded-full bg-neutral-600/60" /><i className="block h-2 w-full rounded-full bg-neutral-200" /><i className="block h-2 w-4/5 rounded-full bg-neutral-200" /></div></div>
 }
 
-function WireframeSlot({ slot, index, active, onSelect, className = '' }: { slot: SlotDef; index: number; active: boolean; onSelect: () => void; className?: string }) {
+function WireframeSlot({ slot, index, active, incoming, outgoing, onSelect, className = '' }: { slot: SlotDef; index: number; active: boolean; incoming: boolean; outgoing: boolean; onSelect: () => void; className?: string }) {
   const kind = wireframeKind(slot)
   return (
     <button
@@ -176,6 +234,8 @@ function WireframeSlot({ slot, index, active, onSelect, className = '' }: { slot
       <span className={`absolute left-2.5 top-2 z-10 flex items-center gap-1.5 rounded-full px-2 py-1 text-[8px] font-black shadow-sm ${active ? 'bg-indigo-600 text-white' : 'bg-white text-neutral-600'}`}>
         <b className="font-mono">{String(index + 1).padStart(2, '0')}</b>{slot.role}
       </span>
+      {incoming && <span className="absolute -left-px top-1/2 z-20 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-sky-500 shadow" title="接收其他槽位的数据" />}
+      {outgoing && <span className="absolute -right-px top-1/2 z-20 size-2.5 translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-fuchsia-500 shadow" title="向其他槽位发送事件" />}
       <WireframeContent kind={kind} />
     </button>
   )
@@ -183,6 +243,7 @@ function WireframeSlot({ slot, index, active, onSelect, className = '' }: { slot
 
 function BlueprintWireframe({ scenario, activeSlotId, onSelect }: { scenario: Scenario; activeSlotId: string; onSelect: (slotId: string) => void }) {
   const indexed = new Map(scenario.slots.map((slot, index) => [slot.id, index]))
+  const bindings = inferBlueprintBindings(scenario.slots)
   const roles = scenario.slots.map((slot) => `${slot.id} ${slot.role}`).join(' ')
   const inferredLayout = scenario.layout !== 'freeform'
     ? scenario.layout
@@ -193,7 +254,16 @@ function BlueprintWireframe({ scenario, activeSlotId, onSelect }: { scenario: Sc
         : 'freeform'
   const find = (kind: WireframeKind) => scenario.slots.find((slot) => wireframeKind(slot) === kind)
   const renderSlot = (slot: SlotDef | undefined, className: string) => slot ? (
-    <WireframeSlot key={slot.id} slot={slot} index={indexed.get(slot.id) ?? 0} active={activeSlotId === slot.id} onSelect={() => onSelect(slot.id)} className={className} />
+    <WireframeSlot
+      key={slot.id}
+      slot={slot}
+      index={indexed.get(slot.id) ?? 0}
+      active={activeSlotId === slot.id}
+      incoming={bindings.some((binding) => binding.to.id === slot.id)}
+      outgoing={bindings.some((binding) => binding.from.id === slot.id)}
+      onSelect={() => onSelect(slot.id)}
+      className={className}
+    />
   ) : null
 
   let body: React.ReactNode
@@ -247,6 +317,28 @@ function BlueprintWireframe({ scenario, activeSlotId, onSelect }: { scenario: Sc
       <div className={`overflow-hidden rounded-[20px] bg-white p-2 ${inferredLayout === 'landing' ? 'h-[460px]' : 'h-[400px]'}`}>
         {body}
       </div>
+      <div className="mt-2 rounded-2xl border border-neutral-200 bg-white/80 px-3 py-2">
+        <div className="flex items-center gap-1.5 text-[8px] font-black uppercase tracking-[0.16em] text-neutral-400"><Link2 size={10} /> 槽位数据流</div>
+        {bindings.length > 0 ? (
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {bindings.map((binding) => (
+              <button
+                type="button"
+                key={`${binding.from.id}-${binding.to.id}`}
+                onClick={() => onSelect(binding.to.id)}
+                className="hover-pop flex items-center gap-1 rounded-full border border-neutral-200 bg-neutral-50 px-2 py-1 text-[8px] font-bold text-neutral-600"
+              >
+                <span className={`size-1.5 rounded-full ${binding.mode === 'signal' ? 'bg-fuchsia-500' : 'bg-violet-400'}`} />{binding.from.role}
+                <ArrowRight size={9} className="text-neutral-400" />
+                <span className="size-1.5 rounded-full bg-sky-500" />{binding.to.role}
+                <span className={`${binding.mode === 'signal' ? 'font-mono' : ''} font-medium text-neutral-400`}>· {binding.signal}</span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="mt-1 text-[8px] text-neutral-400">当前槽位没有可推断的数据绑定，可分别生成和挑选。</div>
+        )}
+      </div>
     </div>
   )
 }
@@ -258,6 +350,8 @@ function BlueprintView() {
   const focusedSlotId = activeSlotId || scenario.slots[0]?.id || ''
   const candidateCount = scenario.slots.length * 3
   const streamCount = candidateCount * 2
+  const firstWaveCandidates = Math.min(scenario.slots.length, 3)
+  const firstWaveStreams = firstWaveCandidates * 2
   return (
     <div className="h-full overflow-y-auto px-6 py-8">
       <div className="anim-pop mx-auto w-full max-w-5xl rounded-[28px] border border-white/70 bg-white/80 p-6 shadow-xl backdrop-blur-xl">
@@ -268,9 +362,10 @@ function BlueprintView() {
             <p className="mt-1 text-[11px] leading-relaxed text-neutral-500">确认前不会启动 Builder，也不会产生候选生成费用。</p>
           </div>
           <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-right">
-            <div className="flex items-center justify-end gap-1 text-[10px] font-bold text-amber-700"><Coins size={12} /> 预计调用量</div>
-            <div className="mt-1 text-lg font-black text-amber-950">{candidateCount} 个候选</div>
-            <div className="text-[9px] text-amber-700">最多 {streamCount} 条模型流 · 并发受限</div>
+            <div className="flex items-center justify-end gap-1 text-[10px] font-bold text-amber-700"><Coins size={12} /> 首轮可见成本</div>
+            <div className="mt-1 text-lg font-black text-amber-950">{firstWaveCandidates} 个主推候选</div>
+            <div className="text-[9px] text-amber-700">{firstWaveStreams} 条模型流并发 · 每槽位优先出一个</div>
+            <div className="mt-1 border-t border-amber-200 pt-1 text-[8px] text-amber-600">完整补齐上限：{candidateCount} 候选 · {streamCount} 条流（分批）</div>
           </div>
         </div>
         <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(320px,0.95fr)_minmax(340px,1.05fr)]">
@@ -321,7 +416,7 @@ function BlueprintView() {
             </div>
           </section>
         </div>
-        <div className="mt-5 flex flex-col items-center justify-between gap-3 rounded-2xl bg-neutral-950 px-4 py-3 text-white sm:flex-row">
+        <div className="sticky bottom-2 z-30 mt-5 flex flex-col items-center justify-between gap-3 rounded-2xl border border-white/15 bg-neutral-950/95 px-4 py-3 text-white shadow-2xl backdrop-blur-xl sm:flex-row">
           <div className="text-[10px] leading-relaxed text-neutral-300">
             {harnessMode === 'kimi' ? '确认后先选择 Visual DNA，再由 Motion / Product / Explorer 生成候选。' : '演示模式也遵循相同确认流程。'}
           </div>
