@@ -2,6 +2,8 @@
 
 一个用于并行生成、比较和挑选 UI 方案的 React + TypeScript 应用。
 
+在线体验：[pick.alhz.org](https://pick.alhz.org)
+
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Failiheizi%2Fwhat-to-pick-today)
 
 ## 本地运行
