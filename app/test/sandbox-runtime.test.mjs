@@ -99,7 +99,7 @@ test('sandbox runtime messages require the current iframe, token and revision', 
 
 test('composition sandbox renders siblings in one React tree and wires semantic outputs to inputs', async () => {
   const source = candidate(`
-    export default function UserList({ onUserSelected }) { return <button onClick={() => onUserSelected?.('u-1')}>Select</button> }
+    export default function UserList({ onSelectUser }) { return <button onClick={() => onSelectUser?.('u-1')}>Select</button> }
   `)
   const target = {
     ...candidate(`export default function Permissions({ selectedUser }) { return <div>{selectedUser}</div> }`),
@@ -124,6 +124,8 @@ test('composition sandbox renders siblings in one React tree and wires semantic 
   assert.equal((document.match(/createRoot\(/g) ?? []).length, 1)
   assert.match(document, /signal_0/)
   assert.match(document, /set_signal_0/)
+  assert.match(document, /"onUserSelected":\(\.\.\.args\)=>set_signal_0/)
+  assert.match(document, /"onSelectUser":\(\.\.\.args\)=>set_signal_0/)
   assert.match(document, /data-composition-slot/)
   assert.match(document, /composition-slot is-active/)
   assert.match(document, /background-color:transparent!important/)

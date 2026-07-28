@@ -23,6 +23,26 @@ export function signalTokens(value: string) {
     .filter((token) => token.length > 1 && !GENERIC_SIGNAL_TOKENS.has(token))
 }
 
+/** Keep restored/generated callback spelling variants live without rewriting user code. */
+export function eventCallbackAliases(name: string) {
+  const semanticName = signalName(name).replace(/^on(?=[A-Z])/, '').replace(/Change$/, '')
+  const pascal = semanticName.charAt(0).toUpperCase() + semanticName.slice(1)
+  const aliases = new Set([name, `on${pascal}`, `on${pascal}Change`])
+  const selectedPrefix = semanticName.match(/^selected(.+)$/i)
+  const selectedSuffix = semanticName.match(/^(.+)Selected$/i)
+  const entity = selectedPrefix?.[1] ?? selectedSuffix?.[1]
+  if (entity) {
+    const entityPascal = entity.charAt(0).toUpperCase() + entity.slice(1)
+    aliases.add(`${selectedPrefix ? 'selected' : ''}${entityPascal}`)
+    aliases.add(`onSelect${entityPascal}`)
+    aliases.add(`on${entityPascal}Selected`)
+    aliases.add(`onSelected${entityPascal}`)
+    aliases.add(`onSelected${entityPascal}Change`)
+    aliases.add(`on${entityPascal}Change`)
+  }
+  return [...aliases]
+}
+
 /** Infer only high-confidence output → input links; one output may fan out. */
 export function inferSemanticBindings(components: ComponentContract[]): SemanticBinding[] {
   const bindings: SemanticBinding[] = []

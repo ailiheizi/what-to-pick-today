@@ -1,4 +1,4 @@
-import { inferSemanticBindings } from './bindings.ts'
+import { eventCallbackAliases, inferSemanticBindings } from './bindings.ts'
 import type { CandidateArtifact, CompileResult, ComponentContract, RuntimeAdapter } from './types.ts'
 
 type BabelModule = typeof import('@babel/standalone')
@@ -224,7 +224,9 @@ export async function createCompositionSandboxDocument(
   const propOverrides = new Map<string, string[]>()
   for (const { binding, name } of stateDefinitions) {
     const source = propOverrides.get(binding.fromComponentId) ?? []
-    source.push(`${JSON.stringify(binding.outputName)}:(...args)=>set_${name}(args.length<=1?args[0]:args)`)
+    for (const alias of eventCallbackAliases(binding.outputName)) {
+      source.push(`${JSON.stringify(alias)}:(...args)=>set_${name}(args.length<=1?args[0]:args)`)
+    }
     propOverrides.set(binding.fromComponentId, source)
     for (const target of binding.targets) {
       const targetProps = propOverrides.get(target.componentId) ?? []

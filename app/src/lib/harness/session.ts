@@ -60,34 +60,6 @@ function contractUsageErrors(candidate: CandidateArtifact, component: PagePlan['
   return errors
 }
 
-function migrateRestoredCandidateOutputs(candidates: CandidateArtifact[], originalPlan: PagePlan, normalizedPlan: PagePlan) {
-  const normalizedById = new Map(normalizedPlan.components.map((component) => [component.id, component]))
-  const renamesByComponent = new Map<string, Array<{ from: string; to: string }>>()
-  for (const original of originalPlan.components) {
-    const normalized = normalizedById.get(original.id)
-    if (!normalized) continue
-    const renames = original.outputs.flatMap((output, index) => {
-      const next = normalized.outputs[index]
-      return next && next.name !== output.name ? [{ from: output.name, to: next.name }] : []
-    })
-    if (renames.length) renamesByComponent.set(original.id, renames)
-  }
-  return candidates.map((candidate) => {
-    const renames = renamesByComponent.get(candidate.componentId)
-    if (!renames?.length) return candidate
-    return {
-      ...candidate,
-      files: candidate.files.map((file) => ({
-        ...file,
-        content: renames.reduce((content, rename) => content.replace(
-          new RegExp(`\\b${rename.from.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\b`, 'g'),
-          rename.to,
-        ), file.content),
-      })),
-    }
-  })
-}
-
 export class HarnessSession {
   readonly sessionId: string
   readonly requirement: string
@@ -143,10 +115,7 @@ export class HarnessSession {
       // bindings instead of leaving restored projects permanently disconnected.
       this.#plan = restored.plan ? normalizePlanCohesion(restored.plan, requirement) : null
       this.#direction = restored.direction
-      const restoredCandidates = restored.plan && this.#plan
-        ? migrateRestoredCandidateOutputs(restored.candidates, restored.plan, this.#plan)
-        : restored.candidates
-      this.#candidates = new Map(restoredCandidates.map((candidate) => [candidate.id, candidate]))
+      this.#candidates = new Map(restored.candidates.map((candidate) => [candidate.id, candidate]))
       this.#selections = new Map(Object.entries(restored.selections))
       this.#review = restored.review
     }

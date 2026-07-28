@@ -1,5 +1,5 @@
 import type { CandidateArtifact, HarnessSnapshot, VisualDNA } from './types.ts'
-import { inferSemanticBindings } from './bindings.ts'
+import { eventCallbackAliases, inferSemanticBindings } from './bindings.ts'
 
 export type HarnessExportOptions = {
   /** 默认要求每个规划组件都已经选择。 */
@@ -163,7 +163,9 @@ function appSource(snapshot: HarnessSnapshot, selected: CandidateArtifact[]) {
   const overrides = new Map<string, string[]>()
   for (const { binding, name } of stateNames) {
     const source = overrides.get(binding.fromComponentId) ?? []
-    source.push(`${JSON.stringify(binding.outputName)}: (...args: unknown[]) => set_${name}(args.length <= 1 ? args[0] : args)`)
+    for (const alias of eventCallbackAliases(binding.outputName)) {
+      source.push(`${JSON.stringify(alias)}: (...args: unknown[]) => set_${name}(args.length <= 1 ? args[0] : args)`)
+    }
     overrides.set(binding.fromComponentId, source)
     for (const target of binding.targets) {
       const targetProps = overrides.get(target.componentId) ?? []

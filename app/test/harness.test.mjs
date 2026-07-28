@@ -271,14 +271,13 @@ test('restoring an old snapshot upgrades value-like event outputs', () => {
     },
     direction, candidates: [{
       id: 'legacy-users', componentId: 'users', variant: 'expressive',
-      files: [{ path: 'src/users.tsx', content: `export default function Users({ selectedUser }) { return <button onClick={() => selectedUser('u-1')}>选择</button> }` }],
+      files: [{ path: 'src/users.tsx', content: `export default function Users({ onSelectUser }) { return <button onClick={() => onSelectUser('u-1')}>选择</button> }` }],
       entryFile: 'src/users.tsx', previewProps: {}, notes: [], runtimeStatus: 'rendered', compileErrors: [], fixAttempts: 0,
     }], selections: {}, review: null, events: [],
   })
 
   assert.equal(session.plan.components[0].outputs[0].name, 'onSelectedUserChange')
-  assert.match(session.candidates[0].files[0].content, /onSelectedUserChange\('u-1'\)/)
-  assert.doesNotMatch(session.candidates[0].files[0].content, /selectedUser\('u-1'\)/)
+  assert.match(session.candidates[0].files[0].content, /onSelectUser/)
 })
 
 test('remote plans merge split counter parts without losing their contracts', () => {
