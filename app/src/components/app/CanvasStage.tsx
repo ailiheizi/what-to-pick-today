@@ -7,6 +7,7 @@ import { EXAMPLE_PROMPTS } from '../../lib/scenarios'
 import { inferSemanticBindings, signalName } from '../../lib/harness/bindings'
 import { ConfettiBurst, ConfettiRain, FloatingEmojis } from './playful'
 import GeneratedCandidatePreview from './GeneratedCandidatePreview'
+import GeneratedCompositionPreview from './GeneratedCompositionPreview'
 import StreamingHtmlPreview from './StreamingHtmlPreview'
 
 /* ---------------- 空状态：产品自我介绍 ---------------- */
@@ -145,14 +146,18 @@ type BlueprintBinding = {
   mode: 'signal' | 'context'
 }
 
+function contractForSlot(slot: SlotDef) {
+  return {
+    id: slot.id, role: slot.role, slot: slot.id, width: slot.width,
+    inputs: slot.inputs.map((input) => ({ name: signalName(input), type: input.split(':').slice(1).join(':').trim() || 'unknown', required: false })),
+    outputs: slot.outputs.map((output) => ({ name: signalName(output), payload: output.split(':').slice(1).join(':').trim() || 'unknown' })),
+    dependencies: slot.dependencies, designTokens: [],
+  }
+}
+
 function inferBlueprintBindings(slots: SlotDef[]): BlueprintBinding[] {
   const byId = new Map(slots.map((slot) => [slot.id, slot]))
-  const contracts = slots.map((slot) => ({
-    id: slot.id, role: slot.role, slot: slot.id, width: slot.width,
-    inputs: slot.inputs.map((input) => ({ name: signalName(input), type: 'unknown', required: false })),
-    outputs: slot.outputs.map((output) => ({ name: signalName(output), payload: 'unknown' })),
-    dependencies: slot.dependencies, designTokens: [],
-  }))
+  const contracts = slots.map(contractForSlot)
   const bindings = inferSemanticBindings(contracts).flatMap((binding) => binding.targets.map((target) => ({
     from: byId.get(binding.fromComponentId)!, to: byId.get(target.componentId)!,
     signal: binding.outputName, mode: 'signal' as const,
@@ -490,7 +495,7 @@ function DirectionPicker() {
         ))}
       </div>
       <div className="anim-pop mt-5 text-[10px] text-neutral-500" style={{ animationDelay: '0.45s' }}>
-        底板只锁定 Visual DNA（色彩 / 字体 / 圆角 / 动效），之后随时一键换肤
+        切换分支会保留业务合同与共享状态，并让模型重新设计布局、控件与动效，而不只是换色
       </div>
     </div>
   )
@@ -748,7 +753,7 @@ function ReviewOverlayGate() {
 /* ---------------- 画布主体 ---------------- */
 
 export default function CanvasStage() {
-  const { phase, slots, activeSlotId, directionId, scenario, tweaks, submitPrompt, bigConfetti, harnessMode } = useStore()
+  const { phase, slots, activeSlotId, directionId, scenario, tweaks, submitPrompt, bigConfetti, harnessMode, setActiveSlot, tryOn } = useStore()
   const dir = getDirection(directionId ?? 'apple')
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -778,6 +783,13 @@ export default function CanvasStage() {
   const slotById = (id: string) => slots.find((s) => s.def.id === id)
   const gapCls = tweaks.density ? 'gap-4' : 'gap-5'
   const candidateTotal = slots.reduce((total, slot) => total + slot.candidates.length, 0)
+  const compositionEntries = useMemo(() => slots.flatMap((slot) => {
+    const candidate = slot.candidates.find((item) => item.def.id === (slot.tryOnId ?? slot.selectedId))
+    const artifact = candidate?.status === 'rendered' ? candidate.artifact : candidate?.lastGoodArtifact
+    if (!candidate || !artifact) return []
+    return [{ candidate: artifact, contract: contractForSlot(slot.def) }]
+  }), [slots])
+  const showIntegratedComposition = harnessMode === 'kimi' && slots.length > 1 && compositionEntries.length === slots.length
 
   return (
     <main className="flex-1 min-w-0 relative">
@@ -800,7 +812,19 @@ export default function CanvasStage() {
             >
               {/* 风格氛围层：黑客=CRT 扫描线组，复古=纸张颗粒 */}
               <StyleAtmosphere dirId={dir.id} />
-              {scenario.layout === 'dashboard' ? (
+              {showIntegratedComposition ? (
+                <GeneratedCompositionPreview
+                  entries={compositionEntries}
+                  cssVariables={vars}
+                  directionId={dir.id}
+                  layout={scenario.layout}
+                  activeSlotId={activeSlotId}
+                  onSelect={({ slotId, candidateId }) => {
+                    setActiveSlot(slotId)
+                    tryOn(slotId, candidateId)
+                  }}
+                />
+              ) : scenario.layout === 'dashboard' ? (
                 <div className="flex flex-col">
                   {slotById('header') && <SlotShell slot={slotById('header')!} />}
                   <div className="flex">

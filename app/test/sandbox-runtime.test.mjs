@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createSandboxDocument, isSandboxRuntimeMessage, isSandboxSelectionMessage } from '../src/lib/harness/sandbox-runtime.ts'
+import { createCompositionSandboxDocument, createSandboxDocument, isSandboxRuntimeMessage, isSandboxSelectionMessage } from '../src/lib/harness/sandbox-runtime.ts'
 
 function candidate(content) {
   return {
@@ -95,4 +95,41 @@ test('sandbox runtime messages require the current iframe, token and revision', 
   assert.equal(isSandboxRuntimeMessage(message, currentFrame, 'token-old', 'attempt-2'), false)
   assert.equal(isSandboxRuntimeMessage(message, currentFrame, 'token-1', 'attempt-old'), false)
   assert.equal(isSandboxRuntimeMessage({ ...message, data: { ...message.data, type: 'selection' } }, currentFrame, 'token-1', 'attempt-2'), false)
+})
+
+test('composition sandbox renders siblings in one React tree and wires semantic outputs to inputs', async () => {
+  const source = candidate(`
+    export default function UserList({ onUserSelected }) { return <button onClick={() => onUserSelected?.('u-1')}>Select</button> }
+  `)
+  const target = {
+    ...candidate(`export default function Permissions({ selectedUser }) { return <div>{selectedUser}</div> }`),
+    id: 'permissions-candidate',
+    componentId: 'permissions',
+    entryFile: 'src/Permissions.tsx',
+    previewProps: { selectedUser: 'u-0' },
+    files: [{ path: 'src/Permissions.tsx', content: `export default function Permissions({ selectedUser }) { return <div>{selectedUser}</div> }` }],
+  }
+  const document = await createCompositionSandboxDocument([
+    {
+      candidate: source,
+      contract: { id: 'users', role: '用户列表', slot: 'users', width: 'fluid', inputs: [], outputs: [{ name: 'onUserSelected', payload: 'string' }], dependencies: ['react'], designTokens: [] },
+    },
+    {
+      candidate: target,
+      contract: { id: 'permissions', role: '权限编辑', slot: 'permissions', width: 'fluid', inputs: [{ name: 'selectedUser', type: 'string', required: true }], outputs: [], dependencies: ['react'], designTokens: [] },
+      active: true,
+    },
+  ], { '--dna-bg': '#000' }, 'composition-token', 'composition-revision', 'freeform', 'md3')
+
+  assert.equal((document.match(/createRoot\(/g) ?? []).length, 1)
+  assert.match(document, /signal_0/)
+  assert.match(document, /set_signal_0/)
+  assert.match(document, /data-composition-slot/)
+  assert.match(document, /composition-slot is-active/)
+  assert.match(document, /background-color:transparent!important/)
+  assert.match(document, /data-direction[^\n]+md3/)
+  assert.match(document, /repeat\(auto-fit,minmax\(min\(100%,360px\),1fr\)\)/)
+  assert.match(document, /data\.type!==['"]active-slot['"]/)
+  assert.match(document, /classList\.toggle\(['"]is-active['"]/)
+  assert.match(document, /slot\.dataset\.compositionSlot/)
 })

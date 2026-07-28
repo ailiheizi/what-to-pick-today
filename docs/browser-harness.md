@@ -176,6 +176,25 @@ Sandpack 与 WebContainers 都没有被采用，也不在 `app/package.json` 里
 
 生成提示词根据原始需求判断 UI 语言：中文需求的项目名、槽位职责、标题、按钮、表头、状态与提示默认使用简体中文；代码 id 与 prop 名仍保持英文标识符。预览共享值会把 `timeRange`、`selectedMetric` 等技术字段映射为自然产品文案，未知 prop 不再以“示例字段名”的形式暴露给用户。
 
+## 单文档整页组合与共享状态
+
+多槽位画布不再把若干候选 iframe 纵向堆起来。`GeneratedCompositionPreview.tsx` 调用 `createCompositionSandboxDocument()`，把当前每个槽位正在试穿或已选择的候选编译进同一个 iframe、同一个 React 树，只执行一次 `createRoot()`。
+
+组合运行时根据组件合同调用 `inferSemanticBindings()`：上游 `output` 回调在组合根创建共享 `useState`，匹配的下游 `input` 直接读取该 state。因此用户在“用户列表”选择一名用户时，“权限编辑器”会在同一画布立即更新；这不是预览截图之间的伪连线。Planner 的 output 必须采用 React 回调命名（如 `onUserSelected`），旧快照中的值式 output 会在恢复时迁移为回调合同。
+
+组合槽位仍保留 iframe 隔离、CSP、依赖白名单和选择消息桥。生成组件必须是透明、内容高度的可嵌入 section；`100vh`、`min-h-screen`、fixed 全屏、独立页面底板、重复导航和重复页面壳会在提示词与 Reviewer 阶段被拒绝或要求修复。
+
+## 设计分支是结构迁移，不是 token 换肤
+
+切换苹果风、MD3、黑客风或复古风时，`HarnessSession.restyleCandidates()` 会并行调用 Revision Builder 重写所有可见候选，保留业务合同、共享状态和文件边界。每个方向同时拥有强制布局语法：
+
+- 苹果风：紧凑主从分栏 / inset grouped list、悬浮工具栏、外层玻璃材质。
+- MD3：top app bar、响应式 tonal card grid、chips / filled tonal / FAB 操作层级。
+- 黑客风：命令栏或状态栏、高密度表格/分屏、连续 1px 细线和字符网格。
+- 复古：报刊 masthead、不对称双栏或跨栏标题、双线分隔和印章式操作。
+
+Builder、Draft Renderer 与 Revision 都会收到同一份 layout grammar，并被要求至少改变一个主要信息分组的空间位置、跨列关系或控件层级。组合运行时还根据 `data-direction` 提供方向级页面编排兜底：MD3 使用自适应卡片网格，黑客风连续拼接终端面板，复古使用报刊双栏；即使模型产物偏保守，整页骨架也不会退化成同一布局只换颜色。
+
 ## 基本用法
 
 ```ts

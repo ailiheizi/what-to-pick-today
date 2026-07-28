@@ -3,7 +3,7 @@ import { builderAgentFor } from './agents.ts'
 import { compareCandidates, findRerollTargets } from './diversity.ts'
 import { BrowserKimiClient, extractStreamingJsonString } from './kimi.ts'
 import { createAtomicPlan, normalizePlanCohesion } from './plan-cohesion.ts'
-import { builderMessages, draftPreviewMessages, fixerMessages, plannerMessages, reviewerMessages, revisionMessages, sharedPreviewProps } from './prompts.ts'
+import { builderMessages, directionLayoutGrammar, draftPreviewMessages, fixerMessages, plannerMessages, reviewerMessages, revisionMessages, sharedPreviewProps } from './prompts.ts'
 import { parseCandidate, parsePlan, parseReview } from './schemas.ts'
 import { TaskScheduler } from './scheduler.ts'
 import { harnessStorage } from './storage.ts'
@@ -39,6 +39,53 @@ const MAX_CONCURRENT_AGENT_JOBS = 3
 // run that has been replaced must not paint, mutate or emit anything.
 function supersededError() {
   return new DOMException('这批生成已被新的请求取代', 'AbortError')
+}
+
+function contractUsageErrors(candidate: CandidateArtifact, component: PagePlan['components'][number]) {
+  const entry = candidate.files.find((file) => file.path === candidate.entryFile)?.content ?? ''
+  const errors: string[] = []
+  for (const input of component.inputs) {
+    const escaped = input.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    if (!new RegExp(`\\b${escaped}\\b`).test(entry)) {
+      errors.push(`组件合同错误：必须从 props 消费 input「${input.name}」`)
+    }
+  }
+  for (const output of component.outputs) {
+    const escaped = output.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const invocation = new RegExp(`(?:\\b${escaped}|props\\s*\\.\\s*${escaped})\\s*(?:\\?\\.)?\\s*\\(`)
+    if (!invocation.test(entry)) {
+      errors.push(`组件合同错误：必须在真实交互中调用 output 回调「${output.name}(payload)」`)
+    }
+  }
+  return errors
+}
+
+function migrateRestoredCandidateOutputs(candidates: CandidateArtifact[], originalPlan: PagePlan, normalizedPlan: PagePlan) {
+  const normalizedById = new Map(normalizedPlan.components.map((component) => [component.id, component]))
+  const renamesByComponent = new Map<string, Array<{ from: string; to: string }>>()
+  for (const original of originalPlan.components) {
+    const normalized = normalizedById.get(original.id)
+    if (!normalized) continue
+    const renames = original.outputs.flatMap((output, index) => {
+      const next = normalized.outputs[index]
+      return next && next.name !== output.name ? [{ from: output.name, to: next.name }] : []
+    })
+    if (renames.length) renamesByComponent.set(original.id, renames)
+  }
+  return candidates.map((candidate) => {
+    const renames = renamesByComponent.get(candidate.componentId)
+    if (!renames?.length) return candidate
+    return {
+      ...candidate,
+      files: candidate.files.map((file) => ({
+        ...file,
+        content: renames.reduce((content, rename) => content.replace(
+          new RegExp(`\\b${rename.from.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\b`, 'g'),
+          rename.to,
+        ), file.content),
+      })),
+    }
+  })
 }
 
 export class HarnessSession {
@@ -90,9 +137,16 @@ export class HarnessSession {
         : restored.phase === 'planning'
           ? (restored.plan ? 'awaiting_direction' : 'failed')
           : restored.phase
-      this.#plan = restored.plan
+      // Old snapshots may use value-like output names (`selectedUser`) for an
+      // event that feeds a sibling input. Upgrade those contracts on restore so
+      // existing generated callbacks (`onSelectedUserChange`) become live
+      // bindings instead of leaving restored projects permanently disconnected.
+      this.#plan = restored.plan ? normalizePlanCohesion(restored.plan, requirement) : null
       this.#direction = restored.direction
-      this.#candidates = new Map(restored.candidates.map((candidate) => [candidate.id, candidate]))
+      const restoredCandidates = restored.plan && this.#plan
+        ? migrateRestoredCandidateOutputs(restored.candidates, restored.plan, this.#plan)
+        : restored.candidates
+      this.#candidates = new Map(restoredCandidates.map((candidate) => [candidate.id, candidate]))
       this.#selections = new Map(Object.entries(restored.selections))
       this.#review = restored.review
     }
@@ -514,6 +568,15 @@ export class HarnessSession {
     const candidate = this.#requireCandidate(candidateId)
     const runtime = this.#options.runtime
     if (!runtime) return
+    const component = this.#plan?.components.find((item) => item.id === candidate.componentId)
+    const contractErrors = component ? contractUsageErrors(candidate, component) : []
+    if (contractErrors.length) {
+      candidate.runtimeStatus = 'compile_failed'
+      candidate.compileErrors = contractErrors
+      this.events.publish({ type: 'compile.failed', candidateId, errors: contractErrors }, 'compiling')
+      await this.#repair(candidate, contractErrors, signal)
+      return
+    }
     const attemptId = candidate.attemptId
     candidate.runtimeStatus = 'compiling'
     this.events.publish({ type: 'compile.started', candidateId }, 'compiling')
@@ -611,6 +674,62 @@ export class HarnessSession {
     return results
   }
 
+  async restyleCandidates(direction: VisualDirection, candidateIds: string[]) {
+    if (!this.#plan) throw new Error('页面上下文尚未就绪')
+    if (!['selecting', 'complete'].includes(this.#phase)) throw new Error('请等待当前候选生成结束后再切换设计分支')
+    const targets = [...new Set(candidateIds)].filter((candidateId) => this.#candidates.has(candidateId))
+    const previousDirection = this.#direction
+    const originals = new Map(targets.map((candidateId) => [candidateId, this.#requireCandidate(candidateId)]))
+    this.#direction = direction
+    this.#review = null
+    this.events.publish({ type: 'direction.selected', direction }, 'selected')
+    if (!targets.length) {
+      await this.#persist()
+      return []
+    }
+    const instruction = [
+      `把当前组件完整迁移到设计分支「${direction.name}」：${direction.visualDNA.concept}。`,
+      `构图规则：${direction.visualDNA.compositionRules.join('；')}。`,
+      `目标分支的强制布局语法：${directionLayoutGrammar(direction.id).join('；')}。`,
+      '这不是换色任务。必须明显重做根布局、信息分组、控件形态、间距密度和交互反馈，使切换前后即使截图转为灰度也能看出结构差异。',
+      '至少改变一个主要分组的空间位置、宽度关系或跨列方式；不得保留原组件的根层级结构后只替换 className。',
+      '移除上一设计分支特有的布局语言；保留组件合同、业务内容、input/output 名称和文件边界。',
+      '组件是整页中的可嵌入槽位：禁止 min-h-screen、100vh、fixed 全屏、独立页面背景、重复导航或重复页面外壳；根节点背景保持透明，由整页 Visual DNA 底板统一提供。',
+    ].join('\n')
+    this.events.publish({
+      type: 'revision.started',
+      instruction,
+      componentIds: targets.map((candidateId) => this.#requireCandidate(candidateId).componentId),
+    }, 'generating')
+    const scheduler = new TaskScheduler<CandidateArtifact>({
+      concurrency: Math.min(this.#options.concurrency, 3),
+      retries: this.#options.retries,
+      signal: this.#abortController.signal,
+      onRetry: (taskId, attempt, error) => this.events.publish({ type: 'task.retrying', taskId, attempt, error: error.message }, 'generating'),
+      onFailed: (taskId, error) => this.events.publish({ type: 'task.failed', taskId, error: error.message }, 'generating'),
+    })
+    for (const candidateId of targets) {
+      scheduler.add({
+        id: `restyle:${candidateId}`,
+        run: async (signal) => this.#reviseCandidate(candidateId, instruction, signal),
+      })
+    }
+    const results = await scheduler.run()
+    if (results.length !== targets.length) {
+      this.#direction = previousDirection
+      for (const [candidateId, candidate] of originals) {
+        this.#candidates.set(candidateId, candidate)
+        this.events.publish({ type: 'revision.completed', candidate }, 'ready')
+        if (candidate.runtimeStatus === 'rendered') this.events.publish({ type: 'render.ready', candidateId }, 'ready')
+      }
+      if (previousDirection) this.events.publish({ type: 'direction.selected', direction: previousDirection }, 'selected')
+      await this.#persist()
+      throw new Error(`设计分支迁移未完整通过（${results.length}/${targets.length}），已恢复原分支和全部候选`)
+    }
+    await this.#persist()
+    return results
+  }
+
   async #reviseCandidate(candidateId: string, instruction: string, signal: AbortSignal) {
     if (!this.#plan || !this.#direction) throw new Error('页面上下文尚未就绪')
     const current = this.#requireCandidate(candidateId)
@@ -638,6 +757,8 @@ export class HarnessSession {
       })
       this.#assertSameFileBoundary(current, revised)
       revised.fixAttempts = current.fixAttempts
+      const usageErrors = contractUsageErrors(revised, component)
+      if (usageErrors.length) throw new Error(usageErrors.join('\n'))
       if (this.#options.runtime) {
         revised.runtimeStatus = 'compiling'
         this.events.publish({ type: 'compile.started', candidateId }, 'compiling')

@@ -4,7 +4,7 @@ import { HarnessEventStream } from '../src/lib/harness/events.ts'
 import { runComponentAgentGraph } from '../src/lib/harness/generation-graph.ts'
 import { BrowserKimiClient, extractStreamingJsonString, parseJson } from '../src/lib/harness/kimi.ts'
 import { isAllowedLocalProxyOrigin, isLocalModelProxyBase, rewriteModelProxyPath, splitModelApiBase } from '../src/lib/harness/local-proxy.ts'
-import { createAtomicPlan, normalizePlanCohesion } from '../src/lib/harness/plan-cohesion.ts'
+import { createAtomicPlan, normalizePlanCohesion, normalizePlanEventOutputs } from '../src/lib/harness/plan-cohesion.ts'
 import { builderMessages } from '../src/lib/harness/prompts.ts'
 import { parseCandidate, parsePlan } from '../src/lib/harness/schemas.ts'
 import { TaskScheduler } from '../src/lib/harness/scheduler.ts'
@@ -229,6 +229,56 @@ test('atomic widget planning keeps one shared state boundary', () => {
 
   assert.equal(createAtomicPlan('做一个产品落地页，包含 hero、功能和价格区块'), null)
   assert.equal(createAtomicPlan('做一个数据分析 dashboard，包含导航、图表和活动列表'), null)
+})
+
+test('cross-slot value outputs are normalized into explicit React callbacks', () => {
+  const plan = {
+    project: { name: 'RBAC', description: '' }, pages: [], visualDirections: [],
+    components: [
+      {
+        id: 'users', role: '用户列表', slot: 'users', width: 'fluid', inputs: [],
+        outputs: [{ name: 'selectedUser', payload: 'string' }, { name: 'onRoleSelected', payload: 'string' }],
+        dependencies: ['react'], designTokens: [],
+      },
+      {
+        id: 'permissions', role: '权限编辑', slot: 'permissions', width: 'fluid',
+        inputs: [{ name: 'selectedUser', type: 'string', required: true }], outputs: [], dependencies: ['react'], designTokens: [],
+      },
+    ],
+  }
+
+  const normalized = normalizePlanEventOutputs(plan)
+  assert.deepEqual(normalized.components[0].outputs.map(({ name }) => name), ['onSelectedUserChange', 'onRoleSelected'])
+  assert.equal(plan.components[0].outputs[0].name, 'selectedUser')
+})
+
+test('restoring an old snapshot upgrades value-like event outputs', () => {
+  const now = Date.now()
+  const direction = {
+    id: 'apple', name: '苹果风', description: '',
+    visualDNA: { concept: '', mood: [], colors: {}, typography: {}, geometry: { radius: '', border: '', density: '' }, motion: { personality: '', duration: '', easing: '' }, compositionRules: [] },
+  }
+  const session = new HarnessSession('RBAC', {
+    kimi: { apiKey: 'test', baseUrl: 'https://example.test/v1', model: 'test', codeModel: 'test', temperature: 0 }, persist: false,
+  }, {
+    version: 1, sessionId: 'legacy-binding', requirement: 'RBAC', phase: 'selecting', createdAt: now, updatedAt: now,
+    plan: {
+      project: { name: 'RBAC', description: '' }, pages: [], visualDirections: [direction],
+      components: [
+        { id: 'users', role: '用户', slot: 'users', width: 'fluid', inputs: [], outputs: [{ name: 'selectedUser', payload: 'string' }], dependencies: ['react'], designTokens: [] },
+        { id: 'permissions', role: '权限', slot: 'permissions', width: 'fluid', inputs: [{ name: 'selectedUser', type: 'string', required: true }], outputs: [], dependencies: ['react'], designTokens: [] },
+      ],
+    },
+    direction, candidates: [{
+      id: 'legacy-users', componentId: 'users', variant: 'expressive',
+      files: [{ path: 'src/users.tsx', content: `export default function Users({ selectedUser }) { return <button onClick={() => selectedUser('u-1')}>选择</button> }` }],
+      entryFile: 'src/users.tsx', previewProps: {}, notes: [], runtimeStatus: 'rendered', compileErrors: [], fixAttempts: 0,
+    }], selections: {}, review: null, events: [],
+  })
+
+  assert.equal(session.plan.components[0].outputs[0].name, 'onSelectedUserChange')
+  assert.match(session.candidates[0].files[0].content, /onSelectedUserChange\('u-1'\)/)
+  assert.doesNotMatch(session.candidates[0].files[0].content, /selectedUser\('u-1'\)/)
 })
 
 test('remote plans merge split counter parts without losing their contracts', () => {
@@ -830,6 +880,112 @@ test('final reviewer reads selected source, safely revises at most three slots a
   assert.match(session.candidates.find(({ componentId }) => componentId === 'two').files[0].content, /two-original/)
   assert.match(session.candidates.find(({ componentId }) => componentId === 'four').files[0].content, /four-original/)
   assert.ok(session.events.all().some(({ event }) => event.type === 'review.completed'))
+})
+
+test('switching visual direction performs structural candidate revisions instead of token-only recoloring', async () => {
+  const oldDirection = {
+    id: 'apple', name: '苹果风', description: '',
+    visualDNA: {
+      concept: 'glass', mood: ['light'], colors: {}, typography: {},
+      geometry: { radius: '24px', border: 'soft', density: 'comfortable' },
+      motion: { personality: 'smooth', duration: '300ms', easing: 'ease' },
+      compositionRules: ['floating cards'],
+    },
+  }
+  const hackerDirection = {
+    id: 'hacker', name: '黑客风', description: '',
+    visualDNA: {
+      concept: 'terminal grid', mood: ['dense'], colors: {}, typography: {},
+      geometry: { radius: '2px', border: 'line', density: 'compact' },
+      motion: { personality: 'mechanical', duration: '120ms', easing: 'linear' },
+      compositionRules: ['1px 细线分隔', '高密度终端布局'],
+    },
+  }
+  const components = ['users', 'permissions'].map((id) => ({
+    id, role: id, slot: id, width: 'fluid', inputs: [], outputs: [], dependencies: ['react'], designTokens: [],
+  }))
+  const candidates = components.map(({ id }) => ({
+    id: `${id}-candidate`, componentId: id, variant: 'expressive',
+    files: [{ path: `src/${id}.tsx`, content: `export default function View(){return <div>${id}-apple</div>}` }],
+    entryFile: `src/${id}.tsx`, previewProps: {}, notes: [], runtimeStatus: 'rendered', compileErrors: [], fixAttempts: 0,
+  }))
+  const revisionRequests = []
+  const fetchImpl = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    const input = JSON.parse(body.messages[1].content)
+    revisionRequests.push(input)
+    const id = input.componentContract.id
+    const result = {
+      files: [{ path: input.currentCandidate.files[0].path, content: `export default function View(){return <section>${id}-hacker-layout</section>}` }],
+      entryFile: input.currentCandidate.entryFile, previewProps: {}, notes: [],
+    }
+    return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify(result) } }] })}\n\ndata: [DONE]\n\n`)
+  }
+  const now = Date.now()
+  const session = new HarnessSession('RBAC 管理面板', {
+    kimi: { apiKey: 'test', baseUrl: 'https://example.test/v1', model: 'test', codeModel: 'test', temperature: 0 },
+    fetchImpl, persist: false, retries: 0, runtime: { compile: async () => ({ ok: true }) },
+  }, {
+    version: 1, sessionId: 'restyle-session', requirement: 'RBAC 管理面板', phase: 'selecting',
+    createdAt: now, updatedAt: now,
+    plan: { project: { name: 'RBAC', description: '' }, pages: [{ id: 'home', name: '首页', route: '/', slots: components.map(({ id }) => id) }], visualDirections: [oldDirection, hackerDirection], components },
+    direction: oldDirection, candidates, selections: {}, review: null, events: [],
+  })
+
+  const revised = await session.restyleCandidates(hackerDirection, candidates.map(({ id }) => id))
+
+  assert.equal(session.direction.id, 'hacker')
+  assert.equal(revised.length, 2)
+  assert.equal(revisionRequests.length, 2)
+  for (const request of revisionRequests) {
+    assert.equal(request.visualDNA.concept, 'terminal grid')
+    assert.ok(request.layoutGrammar.some((rule) => /终端工作区/.test(rule)))
+    assert.match(request.instruction, /不是换色任务/)
+    assert.match(request.instruction, /根布局、信息分组、控件形态/)
+    assert.match(request.instruction, /强制布局语法/)
+    assert.match(request.instruction, /至少改变一个主要分组/)
+    assert.match(request.instruction, /禁止 min-h-screen、100vh/)
+  }
+  assert.ok(session.candidates.every((item) => item.files[0].content.includes('hacker-layout')))
+})
+
+test('an incomplete visual direction migration rolls back every candidate and the previous direction', async () => {
+  const direction = (id) => ({
+    id, name: id, description: '',
+    visualDNA: { concept: id, mood: [], colors: {}, typography: {}, geometry: { radius: '', border: '', density: '' }, motion: { personality: '', duration: '', easing: '' }, compositionRules: [] },
+  })
+  const components = ['users', 'permissions'].map((id) => ({
+    id, role: id, slot: id, width: 'fluid', inputs: [], outputs: [], dependencies: ['react'], designTokens: [],
+  }))
+  const candidates = components.map(({ id }) => ({
+    id: `${id}-candidate`, componentId: id, variant: 'expressive',
+    files: [{ path: `src/${id}.tsx`, content: `export default function View(){return <div>${id}-apple</div>}` }],
+    entryFile: `src/${id}.tsx`, previewProps: {}, notes: [], runtimeStatus: 'rendered', compileErrors: [], fixAttempts: 0,
+  }))
+  const fetchImpl = async (_url, init) => {
+    const input = JSON.parse(JSON.parse(init.body).messages[1].content)
+    const id = input.componentContract.id
+    const result = {
+      files: [{ path: input.currentCandidate.entryFile, content: `export default function View(){return <section>${id}-md3</section>}` }],
+      entryFile: input.currentCandidate.entryFile, previewProps: {}, notes: [],
+    }
+    return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify(result) } }] })}\n\ndata: [DONE]\n\n`)
+  }
+  const now = Date.now()
+  const oldDirection = direction('apple')
+  const session = new HarnessSession('RBAC', {
+    kimi: { apiKey: 'test', baseUrl: 'https://example.test/v1', model: 'test', codeModel: 'test', temperature: 0 },
+    fetchImpl, persist: false, retries: 0,
+    runtime: { compile: async (candidate) => candidate.componentId === 'permissions' ? { ok: false, errors: ['reject'] } : { ok: true } },
+  }, {
+    version: 1, sessionId: 'restyle-rollback', requirement: 'RBAC', phase: 'selecting', createdAt: now, updatedAt: now,
+    plan: { project: { name: 'RBAC', description: '' }, pages: [], visualDirections: [], components },
+    direction: oldDirection, candidates, selections: {}, review: null, events: [],
+  })
+
+  await assert.rejects(() => session.restyleCandidates(direction('md3'), candidates.map(({ id }) => id)), /已恢复原分支/)
+  assert.equal(session.direction.id, 'apple')
+  assert.ok(session.candidates.every((candidate) => candidate.files[0].content.includes('-apple')))
 })
 
 test('sandbox transpiles TSX and rejects relative module imports', async () => {

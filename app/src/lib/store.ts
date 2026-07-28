@@ -186,6 +186,7 @@ interface Store {
 
 let activeHarness: HarnessSession | null = null
 let unsubscribeHarness: (() => void) | null = null
+let directionMigrationRunning = false
 
 function EmptyGeneratedComponent() {
   return null
@@ -793,16 +794,17 @@ export const useStore = create<Store>((set, get) => {
       const runtime = new SandboxRuntimeAdapter({ getCssVariables: () => getDirection(get().directionId ?? 'apple').vars })
       const session = await HarnessSession.restore(sessionId, { kimi: loadKimiSettings(), concurrency: 4, candidateCount: 1, runtime })
       const snapshot = await harnessStorage.load(sessionId)
-      if (!snapshot?.plan) throw new Error('这个项目还没有可恢复的页面蓝图')
-      const scenario = scenarioFromPlan(snapshot.plan)
+      const restoredPlan = session.plan
+      if (!snapshot || !restoredPlan) throw new Error('这个项目还没有可恢复的页面蓝图')
+      const scenario = scenarioFromPlan(restoredPlan)
       const byComponent = new Map<string, CandidateArtifact[]>()
-      for (const artifact of snapshot.candidates) {
+      for (const artifact of session.candidates) {
         const list = byComponent.get(artifact.componentId) ?? []
         list.push(artifact)
         byComponent.set(artifact.componentId, list)
       }
       const slots: SlotState[] = scenario.slots.map((def) => {
-        const selectedId = snapshot.selections[def.id]
+        const selectedId = session.selections[def.id]
         const candidates = (byComponent.get(def.id) ?? []).map((artifact) => ({
           def: {
             id: artifact.id,
@@ -828,9 +830,9 @@ export const useStore = create<Store>((set, get) => {
       }, lastSequence)
       const interrupted = ['planning', 'generating', 'reviewing'].includes(snapshot.phase)
       set({
-        prompt: snapshot.requirement, scenario, slots, directionId: snapshot.direction?.id ?? null,
+        prompt: snapshot.requirement, scenario, slots, directionId: session.direction?.id ?? null,
         activeSlotId: slots.find((slot) => slot.status !== 'selected')?.def.id ?? slots[0]?.def.id ?? null,
-        phase: snapshot.direction ? (snapshot.phase === 'complete' ? 'done' : 'generating') : 'blueprint',
+        phase: session.direction ? (snapshot.phase === 'complete' ? 'done' : 'generating') : 'blueprint',
         harnessMode: 'kimi', harnessError: null, stopped: interrupted,
         chat: [{ id: uid++, role: 'sys', text: interrupted ? '已恢复本地项目。上次网络生成已中断，可继续补齐候选。' : '已恢复本地项目。', ts: now() }],
         history: [{ id: uid++, kind: 'sys', label: '恢复本地项目', ts: now() }],
@@ -995,19 +997,30 @@ export const useStore = create<Store>((set, get) => {
 
     switchBranch: (id) => {
       const s = get()
-      if (!s.directionId || s.directionId === id) return
+      if (!s.directionId || s.directionId === id || directionMigrationRunning) return
+      const previousDirectionId = s.directionId
       const dir = getDirection(id)
       if (s.harnessMode === 'kimi' && activeHarness && ['selecting', 'complete'].includes(activeHarness.phase)) {
         const session = activeHarness
-        void session.chooseVisualDirection(harnessDirection(id)).then(() => {
+        const visibleCandidateIds = [...new Set(s.slots.flatMap((slot) => {
+          const fallbackId = slot.candidates.find((candidate) => candidate.status === 'rendered')?.def.id
+          return [slot.tryOnId, slot.selectedId, fallbackId].filter((candidateId): candidateId is string => Boolean(candidateId))
+        }))]
+        directionMigrationRunning = true
+        set({ directionId: id, harnessError: null })
+        pushHistory('branch', `迁移设计分支 →「${dir.name}」· 正在重构布局`)
+        pushChat('ai', `正在迁移到「${dir.name}」：保留业务合同和共享数据，但会重新设计每个可见槽位的构图、信息分组、控件和动效，不再只是换色。`)
+        sfx.playShift()
+        void session.restyleCandidates(harnessDirection(id), visibleCandidateIds).then((results) => {
           if (activeHarness !== session) return
-          set({ directionId: id, harnessError: null })
-          pushHistory('branch', `切换设计分支 →「${dir.name}」`)
-          pushChat('ai', `已切换到分支「${dir.name}」：${dir.concept}。组件合同不变，仅 Visual DNA 换肤。`)
-          sfx.playShift()
+          pushHistory('branch', `设计分支「${dir.name}」迁移完成 · ${results.length}/${visibleCandidateIds.length} 个槽位`)
+          pushChat('ai', `「${dir.name}」布局迁移完成：${results.length} 个可见槽位已重新构图并编译。组件合同和跨槽位数据绑定保持不变。`)
         }).catch((reason: unknown) => {
           if (activeHarness !== session) return
+          set({ directionId: previousDirectionId })
           reportFailure(reason, '设计分支切换失败')
+        }).finally(() => {
+          directionMigrationRunning = false
         })
         return
       }

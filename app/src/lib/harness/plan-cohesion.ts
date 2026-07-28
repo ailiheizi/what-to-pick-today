@@ -15,6 +15,35 @@ function atomicName(requirement: string) {
   return { id: 'widget', role: '完整交互组件' }
 }
 
+function callbackName(name: string) {
+  const normalized = name.replace(/[^a-zA-Z0-9]+(.)/g, (_match, char: string) => char.toUpperCase())
+  const pascal = normalized.charAt(0).toUpperCase() + normalized.slice(1)
+  return `on${pascal}Change`
+}
+
+/** Values crossing into another slot must be emitted through an unambiguous callback prop. */
+export function normalizePlanEventOutputs(plan: PagePlan): PagePlan {
+  const inputOwners = new Map<string, Set<string>>()
+  for (const component of plan.components) {
+    for (const input of component.inputs) {
+      const owners = inputOwners.get(input.name) ?? new Set<string>()
+      owners.add(component.id)
+      inputOwners.set(input.name, owners)
+    }
+  }
+  let changed = false
+  const components = plan.components.map((component) => {
+    const outputs = component.outputs.map((output) => {
+        const feedsSibling = [...(inputOwners.get(output.name) ?? [])].some((owner) => owner !== component.id)
+        if (!feedsSibling || /^on[A-Z]/.test(output.name)) return output
+        changed = true
+        return { ...output, name: callbackName(output.name) }
+      })
+    return outputs.some((output, index) => output !== component.outputs[index]) ? { ...component, outputs } : component
+  })
+  return changed ? { ...plan, components } : plan
+}
+
 export function createAtomicPlan(requirement: string): PagePlan | null {
   if (!ATOMIC_WIDGET.test(requirement)) return null
   const identity = atomicName(requirement)
@@ -37,22 +66,23 @@ export function createAtomicPlan(requirement: string): PagePlan | null {
 
 /** Last line of defence when a remote Planner splits one atomic stateful widget. */
 export function normalizePlanCohesion(plan: PagePlan, requirement: string): PagePlan {
-  if (!ATOMIC_WIDGET.test(requirement) || plan.components.length <= 1 || plan.components.length > 3) return plan
+  const normalizedPlan = normalizePlanEventOutputs(plan)
+  if (!ATOMIC_WIDGET.test(requirement) || normalizedPlan.components.length <= 1 || normalizedPlan.components.length > 3) return normalizedPlan
   const identity = atomicName(requirement)
-  const mergedIds = new Set(plan.components.map((component) => component.id))
+  const mergedIds = new Set(normalizedPlan.components.map((component) => component.id))
   const merged: ComponentContract = {
     ...identity,
-    slot: plan.components[0]?.slot ?? 'page-main',
-    width: plan.components.some((component) => component.width === 'fluid') ? 'fluid' : 'fixed',
-    inputs: uniqueByName(plan.components.flatMap((component) => component.inputs)),
-    outputs: uniqueByName(plan.components.flatMap((component) => component.outputs)),
-    dependencies: [...new Set(plan.components.flatMap((component) => component.dependencies))],
-    designTokens: [...new Set(plan.components.flatMap((component) => component.designTokens))],
+    slot: normalizedPlan.components[0]?.slot ?? 'page-main',
+    width: normalizedPlan.components.some((component) => component.width === 'fluid') ? 'fluid' : 'fixed',
+    inputs: uniqueByName(normalizedPlan.components.flatMap((component) => component.inputs)),
+    outputs: uniqueByName(normalizedPlan.components.flatMap((component) => component.outputs)),
+    dependencies: [...new Set(normalizedPlan.components.flatMap((component) => component.dependencies))],
+    designTokens: [...new Set(normalizedPlan.components.flatMap((component) => component.designTokens))],
   }
   return {
-    ...plan,
+    ...normalizedPlan,
     components: [merged],
-    pages: plan.pages.map((page) => {
+    pages: normalizedPlan.pages.map((page) => {
       const firstMergedAt = page.slots.findIndex((slot) => mergedIds.has(slot))
       if (firstMergedAt < 0) return page
       return {

@@ -21,7 +21,7 @@ export const DIRECTIONS: Direction[] = [
     mood: ['通透', '玻璃', '悬浮'],
     keywords: ['苹果', 'apple', 'ios', 'mac', 'liquid', 'glass', '玻璃'],
     motion: { personality: '丝滑', duration: '350ms', easing: 'cubic-bezier(0.22, 1, 0.36, 1)' },
-    compositionRules: ['控件浮于内容之上', '材质模糊代替分割线', '蓝色只给主操作'],
+    compositionRules: ['宽屏采用紧凑主从分栏或 inset grouped list', '控件浮于内容之上，材质模糊代替硬分割线', '蓝色只给主操作，禁止满屏药丸行'],
     vars: {
       '--dna-bg': 'rgba(245,245,247,0.72)',
       '--dna-surface': 'rgba(255,255,255,0.55)',
@@ -49,7 +49,7 @@ export const DIRECTIONS: Direction[] = [
     mood: ['柔和', '亲切', '弹性'],
     keywords: ['md3', 'material', '安卓', '谷歌', 'material you'],
     motion: { personality: 'Q 弹', duration: '400ms', easing: 'cubic-bezier(0.34, 1.56, 0.64, 1)' },
-    compositionRules: ['色彩即海拔（surface tones）', '选中态用药丸容器', '按钮 sentence case'],
+    compositionRules: ['宽屏采用 top app bar + 响应式 tonal card grid', '色彩即海拔（surface tones），选中态用药丸容器', '至少一个主要分组跨列或改变空间位置，禁止照搬苹果纵向列表'],
     vars: {
       '--dna-bg': '#f3edf7',
       '--dna-surface': '#fdf8ff',
@@ -77,7 +77,7 @@ export const DIRECTIONS: Direction[] = [
     mood: ['冷峻', '地下', '高能'],
     keywords: ['黑客', 'hacker', '终端', 'terminal', '矩阵', 'crt'],
     motion: { personality: '机械', duration: '120ms', easing: 'linear' },
-    compositionRules: ['等宽字体不可妥协', '1px 细线分隔而非留白', '磷光 glow 只给标题与激活态'],
+    compositionRules: ['命令栏/状态栏 + 高密度表格或分屏面板', '等宽字体不可妥协，1px 细线分隔而非留白', '磷光 glow 只给标题与激活态'],
     vars: {
       '--dna-bg': '#0a0e0a',
       '--dna-surface': '#0d130d',
@@ -105,7 +105,7 @@ export const DIRECTIONS: Direction[] = [
     mood: ['怀旧', '纸感', '印刷'],
     keywords: ['复古', '古老', 'retro', '怀旧', '报纸', 'vintage', '印刷'],
     motion: { personality: '从容', duration: '450ms', easing: 'cubic-bezier(0.25, 1, 0.5, 1)' },
-    compositionRules: ['衬线大标题', '分隔用细双线而非色块', '红色像印章一样克制'],
+    compositionRules: ['报刊 masthead + 不对称双栏或跨栏标题', '衬线大标题，分隔用细双线而非色块', '红色像印章一样克制'],
     vars: {
       '--dna-bg': '#f2ead8',
       '--dna-surface': '#faf4e6',
