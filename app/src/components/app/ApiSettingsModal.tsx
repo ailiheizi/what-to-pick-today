@@ -4,11 +4,20 @@ import { useStore } from '../../lib/store'
 import { clearKimiApiKey, loadKimiSettings, saveKimiSettings } from '../../lib/harness/settings.ts'
 import { isLocalModelProxyBase } from '../../lib/harness/local-proxy.ts'
 import { fetchModelList, PROVIDER_PRESETS, type ModelProviderId, type ProviderPreset } from '../../lib/harness/providers.ts'
+import { MODEL_ROLES, ROLE_LABELS, type ModelRole, type ModelRoutingOverrides } from '../../lib/harness/model-routing.ts'
 import { playClick } from '../../lib/sound'
 
 function providerFor(baseUrl: string): ModelProviderId {
   const normalized = baseUrl.trim().replace(/\/+$/, '')
   return PROVIDER_PRESETS.find((preset) => preset.baseUrl && preset.baseUrl === normalized)?.id ?? 'custom'
+}
+
+const ROLE_HINTS: Record<ModelRole, string> = {
+  planner: '页面拆分与组件合同',
+  draft: '首屏快速草图',
+  builder: '完整组件源码',
+  fixer: '编译修复与 Revision',
+  reviewer: '整页一致性评审',
 }
 
 export default function ApiSettingsModal() {
@@ -18,6 +27,9 @@ export default function ApiSettingsModal() {
   const [baseUrl, setBaseUrl] = useState(initial.baseUrl)
   const [model, setModel] = useState(initial.model)
   const [codeModel, setCodeModel] = useState(initial.codeModel)
+  const [roleModels, setRoleModels] = useState<Record<ModelRole, string>>(() => Object.fromEntries(
+    MODEL_ROLES.map((role) => [role, initial.roles?.[role]?.model ?? '']),
+  ) as Record<ModelRole, string>)
   const [providerId, setProviderId] = useState<ModelProviderId>(() => providerFor(initial.baseUrl))
   const [availableModels, setAvailableModels] = useState<string[]>([])
   const [modelStatus, setModelStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle')
@@ -33,11 +45,21 @@ export default function ApiSettingsModal() {
   if (!settingsOpen) return null
 
   const save = () => {
+    const roles = Object.fromEntries(MODEL_ROLES.flatMap((role) => {
+      const roleModel = roleModels[role].trim()
+      const maxTokens = initial.roles?.[role]?.maxTokens
+      if (!roleModel && maxTokens === undefined) return []
+      return [[role, {
+        ...(roleModel ? { model: roleModel } : {}),
+        ...(maxTokens !== undefined ? { maxTokens } : {}),
+      }]]
+    })) as ModelRoutingOverrides
     saveKimiSettings({
       apiKey: apiKey.trim(),
       baseUrl: baseUrl.trim(),
       model: model.trim(),
       codeModel: codeModel.trim(),
+      roles,
       temperature: initial.temperature,
     }, { rememberKey: remember })
     setSaved(true)
@@ -61,6 +83,10 @@ export default function ApiSettingsModal() {
     setBaseUrl(preset.baseUrl)
     setModel(preset.model)
     setCodeModel(preset.codeModel)
+    // Role model ids are provider-specific. A preset switch should return all
+    // roles to inheritance instead of silently sending old-provider ids to the
+    // newly selected endpoint.
+    setRoleModels(Object.fromEntries(MODEL_ROLES.map((role) => [role, ''])) as Record<ModelRole, string>)
     playClick()
   }
 
@@ -178,6 +204,30 @@ export default function ApiSettingsModal() {
             <input list="available-ai-models" value={codeModel} onChange={(event) => setCodeModel(event.target.value)} placeholder="组件 / 代码模型" className="mt-1.5 w-full rounded-2xl border border-neutral-200 bg-neutral-50 px-3 py-2.5 text-[10px] font-mono focus:outline-none" />
           </div>
         </div>
+
+        <details className="mt-3 rounded-2xl border border-neutral-200 bg-neutral-50/80 px-4 py-3">
+          <summary className="cursor-pointer select-none text-[10px] font-black text-neutral-700">
+            高级 · 按角色选择模型
+            <span className="ml-2 font-normal text-neutral-400">留空即继承上方基础模型</span>
+          </summary>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            {MODEL_ROLES.map((role) => (
+              <div key={role} className={role === 'reviewer' ? 'sm:col-span-2' : ''}>
+                <label className="flex items-baseline justify-between gap-2 text-[9px] font-bold text-neutral-500">
+                  <span>{ROLE_LABELS[role]}</span>
+                  <span className="font-normal text-neutral-400">{ROLE_HINTS[role]}</span>
+                </label>
+                <input
+                  list="available-ai-models"
+                  value={roleModels[role]}
+                  onChange={(event) => setRoleModels((current) => ({ ...current, [role]: event.target.value }))}
+                  placeholder={role === 'builder' || role === 'fixer' ? `继承 ${codeModel || '组件模型'}` : `继承 ${model || '规划模型'}`}
+                  className="mt-1 w-full rounded-xl border border-neutral-200 bg-white px-3 py-2 text-[10px] font-mono focus:outline-none focus:ring-2 focus:ring-neutral-900/10"
+                />
+              </div>
+            ))}
+          </div>
+        </details>
 
         <label className="mt-4 flex items-center gap-2 text-[11px] text-neutral-600 cursor-pointer">
           <input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} className="rounded" />

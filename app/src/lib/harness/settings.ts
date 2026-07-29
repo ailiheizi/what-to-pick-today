@@ -37,6 +37,7 @@ export function saveKimiSettings(settings: KimiSettings, options: SaveSettingsOp
     baseUrl: settings.baseUrl,
     model: settings.model,
     codeModel: settings.codeModel,
+    roles: settings.roles,
     temperature: settings.temperature,
   }))
   sessionStorage.setItem(SESSION_KEY, settings.apiKey)

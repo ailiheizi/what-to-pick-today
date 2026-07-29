@@ -1,4 +1,5 @@
 import type { ComponentContract, PagePlan } from './types.ts'
+import { areSignalTypesCompatible, inferSemanticBindings } from './bindings.ts'
 
 const ATOMIC_WIDGET = /计数(?:器)?|counter|计算器|calculator|秒表|timer|倒计时|播放器|player|开关|toggle|登录(?:框|表单)?|login form|单个?表单|single form/i
 
@@ -44,6 +45,38 @@ export function normalizePlanEventOutputs(plan: PagePlan): PagePlan {
   return changed ? { ...plan, components } : plan
 }
 
+/**
+ * The producer owns the payload shape. If a Planner describes a callback as
+ * `string` but its semantic consumer as `object`, generated siblings can each
+ * compile and still crash the first time the user interacts. Repair that
+ * contract before Draft/Builder prompts are created.
+ */
+export function normalizePlanSignalTypes(plan: PagePlan): PagePlan {
+  const bindings = inferSemanticBindings(plan.components, { requireCompatibleTypes: false })
+  if (!bindings.length) return plan
+  const outputTypes = new Map<string, string>()
+  for (const component of plan.components) {
+    for (const output of component.outputs) outputTypes.set(`${component.id}:${output.name}`, output.payload)
+  }
+  const targetTypes = new Map<string, string>()
+  for (const binding of bindings) {
+    const payload = outputTypes.get(`${binding.fromComponentId}:${binding.outputName}`)
+    if (!payload) continue
+    for (const target of binding.targets) targetTypes.set(`${target.componentId}:${target.inputName}`, payload)
+  }
+  let changed = false
+  const components = plan.components.map((component) => {
+    const inputs = component.inputs.map((input) => {
+      const payload = targetTypes.get(`${component.id}:${input.name}`)
+      if (!payload || areSignalTypesCompatible(payload, input.type)) return input
+      changed = true
+      return { ...input, type: payload }
+    })
+    return inputs.some((input, index) => input !== component.inputs[index]) ? { ...component, inputs } : component
+  })
+  return changed ? { ...plan, components } : plan
+}
+
 export function createAtomicPlan(requirement: string): PagePlan | null {
   if (!ATOMIC_WIDGET.test(requirement)) return null
   const identity = atomicName(requirement)
@@ -66,7 +99,7 @@ export function createAtomicPlan(requirement: string): PagePlan | null {
 
 /** Last line of defence when a remote Planner splits one atomic stateful widget. */
 export function normalizePlanCohesion(plan: PagePlan, requirement: string): PagePlan {
-  const normalizedPlan = normalizePlanEventOutputs(plan)
+  const normalizedPlan = normalizePlanSignalTypes(normalizePlanEventOutputs(plan))
   if (!ATOMIC_WIDGET.test(requirement) || normalizedPlan.components.length <= 1 || normalizedPlan.components.length > 3) return normalizedPlan
   const identity = atomicName(requirement)
   const mergedIds = new Set(normalizedPlan.components.map((component) => component.id))

@@ -107,6 +107,7 @@ export function plannerMessages(requirement: string) {
           '共享同一个核心交互状态的部分必须保持为一个槽位：计数显示+按钮、计算器显示+键盘、播放器画面+控制、表单字段+提交都禁止拆开',
           '只有能够独立替换且通过清晰 inputs/outputs 协作的页面区块才允许拆分；不得让兄弟组件各自复制同一份状态',
           '多槽位页面必须至少定义一条可追踪的跨槽位接口：上游 output 必须是 React 回调命名（onUserSelected、onRoleSelected、onMetricChange），下游 input 使用对应状态名（selectedUser、selectedRole、metric）；不要把 output 和 input 都命名成 selectedUser，也不要让所有 outputs 都为空',
+          '每条跨槽位接口的类型必须完全一致：output.payload 必须等于下游 input.type。若 onUserSelected 传 userId，则两边都用 string；若传完整用户，则两边都用 object，禁止 string → object 这类运行时才会崩溃的合同',
           '如果多个槽位共享筛选、城市、单位、主题或时间范围，把它们声明为同名 inputs；事件生产者再通过 outputs 明确更新动作',
           'visualDirections 固定返回空数组；视觉底板由客户端已有的苹果风、MD3、黑客风和复古风提供',
           '描述保持简洁；不要解释推理过程，不要添加示例数据之外的冗长文案',

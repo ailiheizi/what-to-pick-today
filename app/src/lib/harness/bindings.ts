@@ -11,6 +11,15 @@ export type SemanticBinding = {
   targets: Array<{ componentId: string; inputName: string }>
 }
 
+export type InferSemanticBindingOptions = {
+  /**
+   * Runtime/export callers must never connect incompatible payloads. Planning
+   * normalization temporarily disables this so it can repair the contract
+   * before any Builder sees it.
+   */
+  requireCompatibleTypes?: boolean
+}
+
 export function signalName(value: string) {
   return value.split(/[:(]/, 1)[0].trim()
 }
@@ -43,8 +52,30 @@ export function eventCallbackAliases(name: string) {
   return [...aliases]
 }
 
+function signalTypeCategory(value: string) {
+  const normalized = value.trim().toLowerCase().replace(/\s+/g, '')
+  if (!normalized || ['any', 'unknown', 'never'].includes(normalized)) return 'unknown'
+  if (normalized === 'string' || normalized.includes('string')) return 'string'
+  if (['number', 'integer', 'float', 'double'].includes(normalized) || normalized.includes('number')) return 'number'
+  if (['boolean', 'bool'].includes(normalized) || normalized.includes('boolean')) return 'boolean'
+  if (normalized.endsWith('[]') || /array|list|tuple/.test(normalized)) return 'array'
+  const withoutNull = normalized.replace(/\|null|null\|/g, '')
+  if (/object|record|map/.test(normalized) || /^[a-z_$][a-z0-9_$]*$/.test(withoutNull)) return 'object'
+  return normalized
+}
+
+/** Compare the broad value shape, not provider-specific TypeScript spelling. */
+export function areSignalTypesCompatible(outputPayload: string, inputType: string) {
+  const output = signalTypeCategory(outputPayload)
+  const input = signalTypeCategory(inputType)
+  return output === 'unknown' || input === 'unknown' || output === input
+}
+
 /** Infer only high-confidence output → input links; one output may fan out. */
-export function inferSemanticBindings(components: ComponentContract[]): SemanticBinding[] {
+export function inferSemanticBindings(
+  components: ComponentContract[],
+  { requireCompatibleTypes = true }: InferSemanticBindingOptions = {},
+): SemanticBinding[] {
   const bindings: SemanticBinding[] = []
   for (const from of components) {
     for (const output of from.outputs) {
@@ -55,8 +86,11 @@ export function inferSemanticBindings(components: ComponentContract[]): Semantic
         return to.inputs.map((input) => ({
           componentId: to.id,
           inputName: input.name,
+          inputType: input.type,
           score: outputTokens.filter((token) => signalTokens(input.name).includes(token)).length,
-        })).filter((match) => match.score > 0)
+        })).filter((match) => match.score > 0 && (
+          !requireCompatibleTypes || areSignalTypesCompatible(output.payload, match.inputType)
+        ))
       })
       if (!scored.length) continue
       const bestPerComponent = new Map<string, (typeof scored)[number]>()

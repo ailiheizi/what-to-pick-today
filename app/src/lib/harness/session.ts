@@ -2,11 +2,13 @@ import { HarnessEventStream } from './events.ts'
 import { builderAgentFor } from './agents.ts'
 import { compareCandidates, findRerollTargets } from './diversity.ts'
 import { BrowserKimiClient, extractStreamingJsonString } from './kimi.ts'
+import { resolveModelRouting, routeForRole, type ModelRole, type ModelRoleAlias, type ModelRoute, type ModelRoutingTable } from './model-routing.ts'
 import { createAtomicPlan, normalizePlanCohesion } from './plan-cohesion.ts'
 import { builderMessages, directionLayoutGrammar, draftPreviewMessages, fixerMessages, plannerMessages, reviewerMessages, revisionMessages, sharedPreviewProps } from './prompts.ts'
 import { parseCandidate, parsePlan, parseReview } from './schemas.ts'
 import { TaskScheduler } from './scheduler.ts'
 import { harnessStorage } from './storage.ts'
+import type { Repository } from './revisions.ts'
 import type {
   CandidateArtifact,
   CandidateVariant,
@@ -67,6 +69,7 @@ export class HarnessSession {
 
   #options: Required<Pick<HarnessOptions, 'concurrency' | 'retries' | 'maxFixAttempts' | 'candidateCount' | 'persist'>> & HarnessOptions
   #client: BrowserKimiClient
+  #routing: ModelRoutingTable
   #abortController = new AbortController()
   #generationController: AbortController | null = null
   // Identity of the generation run that currently owns the rail. Every run mints
@@ -82,6 +85,7 @@ export class HarnessSession {
   #candidates = new Map<string, CandidateArtifact>()
   #selections = new Map<string, string>()
   #review: ReviewResult | null = null
+  #revisionRepo: Repository | null = null
   #createdAt: number
   #updatedAt: number
 
@@ -97,6 +101,7 @@ export class HarnessSession {
       ...options,
     }
     this.#client = new BrowserKimiClient(options.kimi, options.fetchImpl)
+    this.#routing = resolveModelRouting(options.kimi)
     this.events = new HarnessEventStream(this.sessionId, restored?.events)
     this.#createdAt = restored?.createdAt ?? Date.now()
     this.#updatedAt = restored?.updatedAt ?? this.#createdAt
@@ -118,6 +123,7 @@ export class HarnessSession {
       this.#candidates = new Map(restored.candidates.map((candidate) => [candidate.id, candidate]))
       this.#selections = new Map(Object.entries(restored.selections))
       this.#review = restored.review
+      this.#revisionRepo = restored.revisionRepo ?? null
     }
   }
 
@@ -136,6 +142,78 @@ export class HarnessSession {
   get direction() { return this.#direction }
   get candidates() { return [...this.#candidates.values()] }
   get selections() { return Object.fromEntries(this.#selections) }
+  get revisionRepo() { return this.#revisionRepo }
+
+  /**
+   * Atomically restore an already-generated design snapshot. This never calls a
+   * model: artifact source, direction and selections move together, and a
+   * failed IndexedDB write restores the previous in-memory session.
+   */
+  async restoreDesignState(input: {
+    direction: VisualDirection
+    candidates: CandidateArtifact[]
+    selections: Record<string, string>
+    revisionRepo: Repository
+  }) {
+    if (!this.#plan) throw new Error('页面上下文尚未就绪')
+    const restoredCandidates = new Map(input.candidates.map((candidate) => [candidate.id, structuredClone(candidate)]))
+    if (restoredCandidates.size !== input.candidates.length) throw new Error('候选快照包含重复 id')
+    // A revision records the exact source for ids that existed at that decision
+    // point, but generation may have completed additional alternatives later.
+    // Keep those extra ids in the candidate pool; snapshot ids still overwrite
+    // the current artifact, which is what makes cross-direction restoration exact.
+    const nextCandidates = new Map([...this.#candidates].map(([id, candidate]) => [id, structuredClone(candidate)]))
+    for (const [candidateId, candidate] of restoredCandidates) nextCandidates.set(candidateId, candidate)
+    const componentIds = new Set(this.#plan.components.map((component) => component.id))
+    for (const [componentId, candidateId] of Object.entries(input.selections)) {
+      const candidate = nextCandidates.get(candidateId)
+      if (!componentIds.has(componentId) || !candidate || candidate.componentId !== componentId || candidate.runtimeStatus !== 'rendered') {
+        throw new Error(`版本快照中的候选无法恢复：${componentId}`)
+      }
+    }
+    const previous = {
+      phase: this.#phase,
+      direction: this.#direction,
+      candidates: this.#candidates,
+      selections: this.#selections,
+      review: this.#review,
+      revisionRepo: this.#revisionRepo,
+    }
+    this.#direction = structuredClone(input.direction)
+    this.#candidates = nextCandidates
+    this.#selections = new Map(Object.entries(input.selections))
+    this.#phase = this.#selections.size === this.#plan.components.length ? 'complete' : 'selecting'
+    this.#review = null
+    this.#revisionRepo = structuredClone(input.revisionRepo)
+    try {
+      await this.#persist()
+    } catch (error) {
+      this.#phase = previous.phase
+      this.#direction = previous.direction
+      this.#candidates = previous.candidates
+      this.#selections = previous.selections
+      this.#review = previous.review
+      this.#revisionRepo = previous.revisionRepo
+      throw error
+    }
+  }
+
+  async setRevisionRepository(repo: Repository) {
+    const previous = this.#revisionRepo
+    this.#revisionRepo = structuredClone(repo)
+    try {
+      await this.#persist()
+    } catch (error) {
+      this.#revisionRepo = previous
+      throw error
+    }
+  }
+
+  #route(role: ModelRole | ModelRoleAlias): ModelRoute {
+    const route = routeForRole(this.#routing, role)
+    if (!route) throw new Error(`模型路由配置无效：${role}`)
+    return route
+  }
 
   async start() {
     if (this.#phase !== 'idle' && this.#phase !== 'failed') throw new Error('当前会话不能重新规划')
@@ -152,9 +230,11 @@ export class HarnessSession {
         return this.#plan
       }
       let receivedChars = 0
+      const route = this.#route('planner')
       const raw = await this.#client.completeJson(plannerMessages(this.requirement), {
         signal: this.#abortController.signal,
-        maxTokens: 3000,
+        model: route.model,
+        maxTokens: route.maxTokens,
         onDelta: (delta) => {
           receivedChars += delta.length
           if (receivedChars < 240) return
@@ -441,6 +521,7 @@ export class HarnessSession {
       }, 'generating')
     }
     let draftResponse = ''
+    const draftRoute = this.#route('draft')
     void this.#client.completeJson(draftPreviewMessages({
       requirement: this.requirement,
       plan: this.#plan,
@@ -449,13 +530,14 @@ export class HarnessSession {
       variant,
     }), {
       signal,
-      model: this.#options.kimi.model,
-      maxTokens: 900,
+      model: draftRoute.model,
+      maxTokens: draftRoute.maxTokens,
       onDelta: (delta) => {
         draftResponse += delta
         publishStreamingPreview(draftResponse, 'draft')
       },
     }).catch(() => null)
+    const builderRoute = this.#route('builder')
     const raw = await this.#client.completeJson(builderMessages({
       requirement: this.requirement,
       plan: this.#plan,
@@ -464,8 +546,8 @@ export class HarnessSession {
       variant,
     }), {
       signal,
-      model: this.#options.kimi.codeModel,
-      maxTokens: 6000,
+      model: builderRoute.model,
+      maxTokens: builderRoute.maxTokens,
       onDelta: (delta) => {
         streamedResponse += delta
         publishStreamingPreview(streamedResponse, 'builder')
@@ -571,10 +653,11 @@ export class HarnessSession {
     this.events.publish({ type: 'repair.started', candidateId: candidate.id, attempt: candidate.fixAttempts }, 'compiling')
     const component = this.#plan.components.find((item) => item.id === candidate.componentId)
     if (!component) throw new Error(`不存在组件合同：${candidate.componentId}`)
+    const route = this.#route('fixer')
     const raw = await this.#client.completeJson(fixerMessages({ component, direction: this.#direction, candidate, errors }), {
       signal,
-      model: this.#options.kimi.codeModel,
-      maxTokens: 6000,
+      model: route.model,
+      maxTokens: route.maxTokens,
     })
     if (signal.aborted) return
     if (!this.#isCurrentAttempt(candidate.id, attemptId)) return
@@ -705,6 +788,7 @@ export class HarnessSession {
     const component = this.#plan.components.find((item) => item.id === current.componentId)
     if (!component) throw new Error(`不存在组件合同：${current.componentId}`)
     try {
+      const route = this.#route('revision')
       const raw = await this.#client.completeJson(revisionMessages({
         instruction,
         requirement: this.requirement,
@@ -713,8 +797,8 @@ export class HarnessSession {
         candidate: current,
       }), {
         signal,
-        model: this.#options.kimi.codeModel,
-        maxTokens: 6000,
+        model: route.model,
+        maxTokens: route.maxTokens,
       })
       const revised = parseCandidate(raw, {
         id: current.id, componentId: current.componentId, variant: current.variant,
@@ -763,6 +847,7 @@ export class HarnessSession {
         files: candidate.files,
       }]
     })
+    const route = this.#route('reviewer')
     const raw = await this.#client.completeJson(reviewerMessages({
       requirement: this.requirement,
       plan: this.#plan,
@@ -770,7 +855,7 @@ export class HarnessSession {
       selections: Object.fromEntries(this.#selections),
       selectedCandidates,
       screenshot,
-    }), { signal: this.#abortController.signal, maxTokens: 2500 })
+    }), { signal: this.#abortController.signal, model: route.model, maxTokens: route.maxTokens })
     const parsedReview = parseReview(raw)
     // Model output is advisory. Enforce both the patch and component limits in
     // code so a broad `page` suggestion cannot silently fan out across a large
@@ -853,6 +938,7 @@ export class HarnessSession {
       selections: Object.fromEntries(this.#selections),
       review: this.#review,
       events: this.events.all(),
+      revisionRepo: this.#revisionRepo,
     }
   }
 

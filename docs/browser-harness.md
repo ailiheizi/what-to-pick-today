@@ -46,7 +46,7 @@ AI_PROXY_API_KEY=temporary-key
 
 ### 接线状态（重要，先看这张表再动手）
 
-仓库里存在若干**已实现、有完整测试、但没有任何应用代码调用**的模块。它们通过 `npm run test:harness` 不代表功能在产品里可用。判定方法是 grep 除自身测试之外的导入方：
+模块通过测试不等于产品能力已经接线；下面状态同时以应用导入方、Store 行为和可见 UI 为准。可用以下命令先检查静态导入，再继续核对运行路径：
 
 ```bash
 grep -rl "harness/<name>.ts" app/src | grep -v "harness/<name>.ts$"
@@ -54,13 +54,27 @@ grep -rl "harness/<name>.ts" app/src | grep -v "harness/<name>.ts$"
 
 | 模块 | 状态 | 证据 / 接入点 |
 | --- | --- | --- |
-| `session.ts` `events.ts` `schemas.ts` `storage.ts` `kimi.ts` `prompts.ts` `agents.ts` `generation-graph.ts` `plan-cohesion.ts` `sandbox-runtime.ts` `settings.ts` `export.ts` `local-proxy.ts` | 已接线 | 主链路 |
+| `session.ts` `events.ts` `schemas.ts` `storage.ts` `kimi.ts` `prompts.ts` `agents.ts` `generation-graph.ts` `plan-cohesion.ts` `sandbox-runtime.ts` `settings.ts` `providers.ts` `export.ts` `local-proxy.ts` | 已接线 | 主链路 |
 | `errors.ts` | 已接线 | `store.ts` 导入 `classifyError`，按 `surface` 分流到设置弹窗 / 聊天 / 卡片内联 |
 | `diversity.ts` | 已接线 | `session.ts` 检测并发出 `candidate.duplicate`；`store.ts` 标记卡片，`CandidateRail.tsx` 展示相似度和用户确认的「换一个」入口 |
-| `model-routing.ts` | **已实现，未接线** | 无导入方。接入点：`session.ts` 中六处 `model:` / `codeModel:` 传参（planner/draft/builder/fixer/reviewer/revision） |
-| `revisions.ts` | **已实现，未接线** | 无导入方。接入点：`store.ts` 的 `commitCandidate`、`undo`、`switchBranch` |
+| `model-routing.ts` | 已接线 | `session.ts` 在构造时解析五角色路由，每次 Planner / Draft / Builder / Fixer / Reviewer / Revision 请求都通过 `routeForRole()` 取模型和 token 上限；`ApiSettingsModal.tsx` 提供角色级模型覆盖 |
+| `revisions.ts` | 已接线 | `store.ts` 创建并维护 Revision DAG；候选扣合、视觉方向切换、撤销、重做和非破坏恢复均调用该模块，`LeftPanel.tsx` 提供对应 UI |
 
-未接线模块的含义：**产品当前没有这个能力**。`revisions.ts` 有完整的分支/回溯 DAG 和 16 个测试，但用户界面上不存在版本回溯；`model-routing.ts` 能做五角色分模型路由，但设置里仍然只有两个模型字段。
+当前这两项都不是“仅有测试的未来能力”。模型设置仍保留“规划模型 / 组件模型”两个基础字段作为简单入口与向后兼容层，但高级区域已能分别覆盖五个角色；版本历史也已经进入左侧栏。仍未实现的是完整的可视化树图，以及两个整页分支的并排 A/B 画布，这不能与“Revision DAG 未接线”混为一谈。
+
+### 角色模型路由的实际行为
+
+`HarnessSession` 构造时用 `resolveModelRouting(options.kimi)` 固化本次会话的路由表。默认映射保持旧设置兼容：
+
+| 角色 | 默认继承 | 默认输出上限 | 运行位置 |
+| --- | --- | ---: | --- |
+| Planner | `model`（规划模型） | 3000 | 页面规划 |
+| Draft | `model`（规划模型） | 900 | 快速可见草图 |
+| Builder | `codeModel`（组件模型） | 6000 | 完整候选源码 |
+| Fixer | `codeModel`（组件模型） | 6000 | 编译与运行时修复 |
+| Reviewer | `model`（规划模型） | 2500 | 整页一致性审查 |
+
+Revision 不占第六个独立角色，它通过 `revision → fixer` 别名共享 Fixer 的模型和预算。设置弹窗的“高级 · 按角色选择模型”可以分别覆盖上述五个角色；留空时继续继承基础字段。服务商预设和 `GET /models` 发现出的列表同时用于基础输入与角色输入，且所有输入仍允许手填。角色覆盖保存在 `KimiSettings.roles`，新建或恢复 Harness 时都会参与路由解析。
 
 
 ## 多 Agent 候选生成（LangGraph）
@@ -114,9 +128,35 @@ LangGraph 通过 `session.ts` 中 `invokeAgentGraph` 内的 `await import('./gen
 
 由此确定的规则：
 
-- 断点续跑依赖 `HarnessSnapshot`（`types.ts:165`）与 `harnessStorage.save/load`，恢复入口是 `HarnessSession.restore(sessionId, options)`。
+- 断点续跑依赖 `HarnessSnapshot`（`types.ts`）与 `harnessStorage.save/load`，恢复入口是 `HarnessSession.restore(sessionId, options)`；快照同时保存 Revision DAG 和每个 revision 的候选 Artifact 源码快照。
 - **不使用 LangGraph 的 `interrupt()`**。人机确认（选择候选、确认视觉方向、补充要求）已经由 session 阶段机 + IndexedDB 表达；再引入 checkpointer 会出现两套互相冲突的持久化真相。当前 `app/src/` 中没有任何 `interrupt`、`checkpoint` 或 `MemorySaver` 引用。
 - 图的输入必须是「已经准备好、可以立刻执行」的 job 列表；任何需要跨会话存活的信息都要先落到 session 状态里。
+
+## 候选比较与试穿（已接线）
+
+默认首轮每槽位只生成 Motion 主推候选，避免用户还没表达比较意愿就支付三份完整生成成本。候选轨的“再来两个方案”会按需补齐 Product 与 Explorer；槽位达到两个候选后出现“展开比较 N 个方案”入口。
+
+`CandidateRail.tsx` 的并排比较弹窗会：
+
+- 在同一个全屏弹层中横向展示最多 3 个候选，并使用一致的预览尺寸，便于判断结构、信息密度和细节，而不是只比较卡片封面。
+- 保留 Agent / variant 身份、方案说明、生成状态、重复候选警告和“换一个”操作。
+- 点击候选时先把它设为该槽位的 `tryOnId`，中间的整页组合画布立即试穿；试穿不会覆盖已扣合选择。
+- 允许直接在比较视图中扣合或替换候选；关闭弹窗后，候选轨与整页画布保持相同状态。
+
+因此当前同时存在两种互补浏览方式：右侧纵向候选轨适合快速逐个试穿，并排弹窗适合同尺寸 A/B/C 比较。这里的“比较”是同一槽位的候选比较，不是两个完整页面分支的并排比较。
+
+## Revision DAG 与历史 UI（已接线）
+
+用户选定视觉底板时，Store 调用 `createRepository()` 创建根 revision。此后稳定的设计决策都会写入不可变 DAG：
+
+- 扣合或替换候选调用 `commit()`，记录完整 `directionId + selections + artifacts` 快照。即使不同设计方向复用同一个 candidate id，各 revision 仍保留当时的源码、preview props 和运行状态。
+- “撤销 / 重做”调用 DAG 的 `undo()` / `redo()`，在分叉点按已记住的 `redoChoice` 返回正确子节点，而不是修改一条易丢失的数组历史。
+- “恢复版本”调用 `restore()` 追加一个带 `restoredFrom` 的新 revision；旧节点和其后续历史都不会被删除。
+- 切换 Apple、MD3、黑客或复古方向时，第一次进入该方向会从当前 revision `fork()` 并提交视觉迁移；再次进入已有方向则 `checkoutBranch()` 到该分支的 head。
+
+左侧栏 `LeftPanel.tsx`（桌面 `xl` 布局可见）已经展示设计分支按钮、当前版本、按时间排列的 revision、撤销、重做和逐条“恢复”操作。DAG 导航统一调用 `HarnessSession.restoreDesignState()`，原子恢复方向、候选源码、选择和 repository，不会重新调用模型“猜回”旧版。所有版本操作受同一串行锁保护；失败时 Store 与 Harness 一起回滚。完整 DAG 会随 `HarnessSnapshot` 写入 IndexedDB，刷新或从最近项目恢复后仍保留分支和历史。
+
+当前 UI 是“分支按钮 + 版本列表”，还不是节点连线式版本树；也尚未提供两个分支整页并排 A/B。数据模型已经能表达这些关系，但文档和产品都不应把尚未存在的可视化说成已完成。
 
 ## iframe 选择桥
 

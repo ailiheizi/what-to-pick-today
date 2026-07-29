@@ -11,8 +11,8 @@
  * This module is the missing model: an append-only DAG of `Revision` nodes
  * (see `docs/onlook-architecture-study.md` §5 and §9, and the append-only
  * version model in `docs/v0-magic-patterns-research.md` §3.4). A revision is a
- * *restorable* value — the full slot→candidate selection map plus the visual
- * direction — not a description of a mutation. Undo and redo are therefore
+ * *restorable* value — the full slot→candidate selection map, visual direction
+ * and generated artifact sources — not a description of a mutation. Undo and redo are therefore
  * movement along the DAG, not replay of an inverse-operation stack.
  *
  * Two properties are load-bearing:
@@ -33,6 +33,8 @@
  * Every operation returns a *new* repository; the input is never mutated, so a
  * caller can hold onto an old repository value for comparison or rollback.
  */
+
+import type { CandidateArtifact } from './types.ts'
 
 /* -------------------------------------------------------------------------- */
 /* Ephemeral state                                                            */
@@ -96,6 +98,7 @@ export type EphemeralFree<T> = T & { [K in EphemeralKey]?: never }
 
 /** slotId → candidateId. The entire restorable content of a page. */
 export type SlotSelectionMap = Readonly<Record<string, string>>
+export type CandidateArtifactMap = Readonly<Record<string, CandidateArtifact>>
 
 /**
  * Why a revision exists. Mirrors the checkpoint trigger table in
@@ -122,6 +125,8 @@ export interface Revision {
   readonly directionId: string
   /** The full committed selection map — never a delta. */
   readonly selections: SlotSelectionMap
+  /** Exact generated sources at this decision point; ids may be reused across restyles. */
+  readonly artifacts: CandidateArtifactMap
   readonly label: string
   readonly ts: number
   readonly reason: RevisionReason
@@ -279,6 +284,24 @@ function normalizeSelections(value: unknown): Result<SlotSelectionMap> {
   return ok(out)
 }
 
+function cloneArtifacts(value: unknown): Result<CandidateArtifactMap> {
+  if (value === undefined) return ok({})
+  if (!isPlainObject(value)) return err({ code: 'invalid_input', message: 'artifacts must be a candidateId → artifact object' })
+  const out: Record<string, CandidateArtifact> = {}
+  for (const candidateId of Object.keys(value).sort()) {
+    const artifact = value[candidateId]
+    if (!isPlainObject(artifact) || artifact.id !== candidateId || !isNonEmptyString(artifact.componentId) || !Array.isArray(artifact.files)) {
+      return err({ code: 'invalid_input', message: 'every artifact must be a serializable CandidateArtifact keyed by its id', keys: [candidateId] })
+    }
+    try {
+      out[candidateId] = structuredClone(artifact) as CandidateArtifact
+    } catch {
+      return err({ code: 'invalid_input', message: 'candidate artifacts must be serializable', keys: [candidateId] })
+    }
+  }
+  return ok(out)
+}
+
 /** Cheap structural check so every entry point is total, even on `null`. */
 function readRepository(repo: unknown): Result<Repository> {
   if (!isPlainObject(repo) || !isPlainObject(repo.revisions) || !isPlainObject(repo.branches)) {
@@ -313,6 +336,7 @@ export interface RootInput {
   readonly branchName: string
   readonly directionId: string
   readonly selections?: SlotSelectionMap
+  readonly artifacts?: CandidateArtifactMap
   readonly label: string
   readonly ts: number
 }
@@ -335,6 +359,8 @@ export function createRepository(input: EphemeralFree<RootInput>): Result<Reposi
   }
   const selections = normalizeSelections(input.selections ?? {})
   if (!selections.ok) return selections
+  const artifacts = cloneArtifacts(input.artifacts)
+  if (!artifacts.ok) return artifacts
 
   const revision: Revision = {
     id: input.revisionId,
@@ -342,6 +368,7 @@ export function createRepository(input: EphemeralFree<RootInput>): Result<Reposi
     branchId: input.branchId,
     directionId: input.directionId,
     selections: selections.value,
+    artifacts: artifacts.value,
     label: input.label,
     ts: input.ts,
     reason: 'root',
@@ -372,6 +399,8 @@ export interface CommitInput {
   readonly id: string
   readonly directionId: string
   readonly selections: SlotSelectionMap
+  /** Omit only for legacy callers that intentionally inherit the parent's sources. */
+  readonly artifacts?: CandidateArtifactMap
   readonly label: string
   readonly ts: number
   readonly reason?: RevisionReason
@@ -409,6 +438,8 @@ export function commit(repo: Repository, input: EphemeralFree<CommitInput>): Res
   if (!branch.ok) return branch
   const selections = normalizeSelections(input.selections)
   if (!selections.ok) return selections
+  const artifacts = input.artifacts === undefined ? ok(parent.value.artifacts ?? {}) : cloneArtifacts(input.artifacts)
+  if (!artifacts.ok) return artifacts
   if (input.restoredFrom !== undefined) {
     const source = getRevision(store, input.restoredFrom)
     if (!source.ok) return source
@@ -420,6 +451,7 @@ export function commit(repo: Repository, input: EphemeralFree<CommitInput>): Res
     branchId: branch.value.id,
     directionId: input.directionId,
     selections: selections.value,
+    artifacts: artifacts.value,
     label: input.label,
     ts: input.ts,
     reason: input.reason ?? 'manual',
@@ -457,6 +489,7 @@ export function restore(
     id: input.id,
     directionId: source.value.directionId,
     selections: source.value.selections,
+    artifacts: source.value.artifacts ?? {},
     label: input.label,
     ts: input.ts,
     reason: 'restore',
@@ -473,6 +506,7 @@ export interface Checkout {
   readonly revision: Revision
   /** Exactly what the page should show: the committed slot selections. */
   readonly selections: SlotSelectionMap
+  readonly artifacts: CandidateArtifactMap
   readonly directionId: string
 }
 
@@ -494,6 +528,7 @@ export function checkout(repo: Repository, revisionId: string): Result<Checkout>
     repo: { ...base.value, currentBranchId: branch.value.id, currentRevisionId: revision.value.id },
     revision: revision.value,
     selections: revision.value.selections,
+    artifacts: revision.value.artifacts ?? {},
     directionId: revision.value.directionId,
   })
 }

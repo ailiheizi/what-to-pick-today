@@ -10,7 +10,7 @@ import { parseCandidate, parsePlan } from '../src/lib/harness/schemas.ts'
 import { TaskScheduler } from '../src/lib/harness/scheduler.ts'
 import { HarnessSession } from '../src/lib/harness/session.ts'
 import { createSandboxDocument } from '../src/lib/harness/sandbox-runtime.ts'
-import { isModelApiConfigured } from '../src/lib/harness/settings.ts'
+import { isModelApiConfigured, loadKimiSettings, saveKimiSettings } from '../src/lib/harness/settings.ts'
 import { useStore } from '../src/lib/store.ts'
 import { migrateLocalEnvContent } from '../../scripts/migrate-local-env.mjs'
 
@@ -156,6 +156,150 @@ test('local proxy counts as a complete API configuration without a browser key',
   }), false)
 })
 
+test('role routing overrides survive settings persistence', () => {
+  const localValues = new Map()
+  const sessionValues = new Map()
+  const storage = (values) => ({
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, String(value)),
+    removeItem: (key) => values.delete(key),
+  })
+  const previousLocalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  const previousSessionStorage = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage')
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage(localValues) })
+  Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, value: storage(sessionValues) })
+  try {
+    saveKimiSettings({
+      apiKey: 'temporary', baseUrl: 'https://example.test/v1',
+      model: 'reasoning', codeModel: 'code', temperature: 0.4,
+      roles: {
+        draft: { model: 'fast-draft' },
+        reviewer: { model: 'strong-reviewer', maxTokens: 4321 },
+      },
+    })
+    const restored = loadKimiSettings()
+    assert.deepEqual(restored.roles, {
+      draft: { model: 'fast-draft' },
+      reviewer: { model: 'strong-reviewer', maxTokens: 4321 },
+    })
+    assert.equal(restored.apiKey, 'temporary')
+  } finally {
+    if (previousLocalStorage) Object.defineProperty(globalThis, 'localStorage', previousLocalStorage)
+    else delete globalThis.localStorage
+    if (previousSessionStorage) Object.defineProperty(globalThis, 'sessionStorage', previousSessionStorage)
+    else delete globalThis.sessionStorage
+  }
+})
+
+test('session sends every harness role through its resolved model route', async () => {
+  const direction = {
+    id: 'routing-test', name: '路由测试', description: '',
+    visualDNA: {
+      concept: 'clear', mood: ['focused'], colors: {}, typography: {},
+      geometry: { radius: '16px', border: 'soft', density: 'normal' },
+      motion: { personality: 'subtle', duration: '200ms', easing: 'ease-out' },
+      compositionRules: ['clear hierarchy'],
+    },
+  }
+  const plan = {
+    project: { name: 'Routing', description: 'role routing integration' },
+    pages: [{ id: 'home', name: 'Home', route: '/', slots: ['dashboard'] }],
+    visualDirections: [direction],
+    components: [{
+      id: 'dashboard', role: '复杂管理控制台', slot: 'dashboard', width: 'fluid',
+      inputs: [], outputs: [], dependencies: ['react'], designTokens: [],
+    }],
+  }
+  const calls = []
+  const fetchImpl = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    const system = body.messages[0].content
+    const input = typeof body.messages[1].content === 'string'
+      ? JSON.parse(body.messages[1].content)
+      : null
+    let role
+    let result
+    if (system.includes('Planner')) {
+      role = 'planner'
+      result = plan
+    } else if (system.includes('UI Draft Renderer')) {
+      role = 'draft'
+      result = { previewHtml: '<main>draft</main>' }
+    } else if (system.includes('局部 Fixer')) {
+      role = 'fixer'
+      result = {
+        files: input.candidate.files,
+        entryFile: input.candidate.entryFile,
+        previewProps: input.candidate.previewProps,
+        notes: ['fixed'],
+      }
+    } else if (system.includes('Revision Builder')) {
+      role = 'fixer'
+      result = {
+        files: input.currentCandidate.files,
+        entryFile: input.currentCandidate.entryFile,
+        previewProps: input.currentCandidate.previewProps,
+        notes: ['revised'],
+      }
+    } else if (system.includes('Reviewer')) {
+      role = 'reviewer'
+      result = { summary: '通过', patches: [] }
+    } else {
+      role = 'builder'
+      const file = input.outputSchema.files[0]
+      result = {
+        previewHtml: '<main>built</main>',
+        files: [{ path: file.path, content: 'export default function View(){ return null }' }],
+        entryFile: file.path,
+        previewProps: {},
+        notes: [],
+      }
+    }
+    calls.push({ role, model: body.model, maxTokens: body.max_tokens, system })
+    const payload = `data: ${JSON.stringify({ choices: [{ delta: { content: JSON.stringify(result) } }] })}\n\ndata: [DONE]\n\n`
+    return new Response(payload, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  }
+  const session = new HarnessSession('制作一个包含知识库、成员和权限的复杂企业管理控制台', {
+    kimi: {
+      apiKey: 'test', baseUrl: 'https://example.test/v1',
+      model: 'legacy-reasoning', codeModel: 'legacy-code', temperature: 0,
+      roles: {
+        planner: { model: 'planner-model', maxTokens: 1111 },
+        draft: { model: 'draft-model', maxTokens: 2222 },
+        builder: { model: 'builder-model', maxTokens: 3333 },
+        fixer: { model: 'fixer-model', maxTokens: 4444 },
+        reviewer: { model: 'reviewer-model', maxTokens: 5555 },
+      },
+    },
+    fetchImpl,
+    persist: false,
+    candidateCount: 1,
+    runtime: { compile: async () => ({ ok: true }) },
+  })
+
+  await session.start()
+  await session.chooseDirection(direction.id)
+  const candidate = session.candidates[0]
+  await session.reportCompile(candidate.id, { ok: false, errors: ['force fixer route'] })
+  await session.select(candidate.componentId, candidate.id)
+  await session.revise('调整信息层级')
+  await session.review()
+
+  const expected = {
+    planner: ['planner-model', 1111],
+    draft: ['draft-model', 2222],
+    builder: ['builder-model', 3333],
+    fixer: ['fixer-model', 4444],
+    reviewer: ['reviewer-model', 5555],
+  }
+  for (const [role, [model, maxTokens]] of Object.entries(expected)) {
+    const roleCalls = calls.filter((call) => call.role === role)
+    assert.ok(roleCalls.length > 0, `${role} should make at least one request`)
+    assert.equal(roleCalls.every((call) => call.model === model && call.maxTokens === maxTokens), true)
+  }
+  assert.equal(calls.filter((call) => call.system.includes('Revision Builder')).every((call) => call.model === 'fixer-model' && call.maxTokens === 4444), true)
+})
+
 test('legacy local credentials migrate to dotenv without exposing or dropping values', () => {
   const modelKey = `sk-${'a'.repeat(24)}`
   const resendKey = `re_${'b'.repeat(24)}`
@@ -250,6 +394,26 @@ test('cross-slot value outputs are normalized into explicit React callbacks', ()
   const normalized = normalizePlanEventOutputs(plan)
   assert.deepEqual(normalized.components[0].outputs.map(({ name }) => name), ['onSelectedUserChange', 'onRoleSelected'])
   assert.equal(plan.components[0].outputs[0].name, 'selectedUser')
+})
+
+test('cross-slot signal types are normalized to the producer payload before generation', () => {
+  const plan = {
+    project: { name: 'RBAC', description: '' }, pages: [], visualDirections: [],
+    components: [
+      {
+        id: 'users', role: '用户列表', slot: 'users', width: 'fixed', inputs: [],
+        outputs: [{ name: 'onUserSelected', payload: 'string' }], dependencies: ['react'], designTokens: [],
+      },
+      {
+        id: 'permissions', role: '权限编辑', slot: 'permissions', width: 'fluid',
+        inputs: [{ name: 'selectedUser', type: 'object', required: true }], outputs: [], dependencies: ['react'], designTokens: [],
+      },
+    ],
+  }
+
+  const normalized = normalizePlanCohesion(plan, '团队权限管理页')
+  assert.equal(normalized.components[1].inputs[0].type, 'string')
+  assert.equal(plan.components[1].inputs[0].type, 'object')
 })
 
 test('restoring an old snapshot upgrades value-like event outputs', () => {
@@ -782,7 +946,7 @@ test('full browser session plans, builds, compiles, selects and reviews', async 
     return new Response(payload, { status: 200, headers: { 'content-type': 'text/event-stream' } })
   }
   const session = new HarnessSession('做一个测试页面', {
-    kimi: { apiKey: 'test', baseUrl: 'https://example.test/v1', model: 'test', temperature: 0 },
+    kimi: { apiKey: 'test', baseUrl: 'https://example.test/v1', model: 'test', codeModel: 'test', temperature: 0 },
     fetchImpl,
     persist: false,
     candidateCount: 2,
@@ -854,7 +1018,7 @@ test('final reviewer reads selected source, safely revises at most three slots a
   }
   const now = Date.now()
   const session = new HarnessSession('做一个中文页面', {
-    kimi: { apiKey: 'test', baseUrl: 'https://example.test/v1', model: 'test', temperature: 0 },
+    kimi: { apiKey: 'test', baseUrl: 'https://example.test/v1', model: 'test', codeModel: 'test', temperature: 0 },
     fetchImpl, persist: false, retries: 0, concurrency: 4,
     runtime: {
       compile: async (candidate) => candidate.componentId === 'two'

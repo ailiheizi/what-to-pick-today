@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   Bot,
   Check,
@@ -12,9 +13,11 @@ import {
   MousePointer2,
   Sparkles,
   Plus,
+  Columns3,
+  X,
   Zap,
 } from 'lucide-react'
-import { getActiveHarness, useStore, type CandidateState } from '../../lib/store'
+import { getActiveHarness, useStore, type CandidateState, type SlotState } from '../../lib/store'
 import { playClick, playTick } from '../../lib/sound'
 import { PlayfulLoader } from './playful'
 import GeneratedCandidatePreview from './GeneratedCandidatePreview'
@@ -109,6 +112,8 @@ function CandidateCard({
   onConfirm,
   onReroll,
   cssVariables,
+  comparisonMode = false,
+  interactionLocked = false,
 }: {
   cand: CandidateState
   previewH: number
@@ -123,6 +128,8 @@ function CandidateCard({
   onConfirm: () => void
   onReroll: () => void
   cssVariables: Record<string, string>
+  comparisonMode?: boolean
+  interactionLocked?: boolean
 }) {
   const ready = cand.status === 'rendered'
   const agent = resolveAgent(cand)
@@ -136,7 +143,7 @@ function CandidateCard({
   const variantBlurb = withoutPrefix(cand.def.blurb, agent.role)
   // 顶栏这类槽位的预览框只有 ~46px 高，多行说明会被裁掉。
   // 窄框只留徽标（失败原因在上方状态条里已经完整给过一次）。
-  const previewBoxH = previewH * 0.52
+  const previewBoxH = comparisonMode ? Math.max(180, Math.min(280, previewH * 0.78)) : previewH * 0.52
   const roomyPreview = previewBoxH >= 72
   const [isLocking, setIsLocking] = useState(false)
   const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -161,8 +168,8 @@ function CandidateCard({
       data-agent={agent.id}
       data-stage={activity.stage}
       data-state={isSelected ? 'selected' : isTryOn ? 'trying' : 'idle'}
-      onClick={() => ready && onTryOn()}
-      className={`candidate-choice-card group relative snap-center shrink-0 rounded-2xl border bg-white overflow-hidden ${
+      onClick={() => ready && !interactionLocked && onTryOn()}
+      className={`candidate-choice-card group relative ${comparisonMode ? 'h-full' : 'snap-center shrink-0'} rounded-2xl border bg-white overflow-hidden ${
         ready ? 'cursor-pointer' : ''
       } ${failed ? 'candidate-choice-failed' : queued ? 'candidate-choice-queued' : ''} ${
         isLocking
@@ -299,11 +306,24 @@ function CandidateCard({
       {/* 信息 + 操作 */}
       <div className="px-3 py-2 flex items-center gap-2">
         <div className="min-w-0 flex-1">
-          <div className="text-[11px] font-bold text-neutral-800 truncate">{variantLabel}</div>
-          <div className="text-[9px] text-neutral-400 truncate">{variantBlurb}</div>
+          <div className="flex items-center gap-1.5">
+            <div className={`${comparisonMode ? '' : 'truncate'} text-[11px] font-bold text-neutral-800`}>{variantLabel}</div>
+            {comparisonMode && (
+              <span className={`shrink-0 rounded-full px-2 py-0.5 text-[8px] font-extrabold ${
+                cand.def.style === 'conservative'
+                  ? 'bg-sky-50 text-sky-700'
+                  : cand.def.style === 'expressive'
+                    ? 'bg-pink-50 text-pink-700'
+                    : 'bg-violet-50 text-violet-700'
+              }`}>
+                {cand.def.style === 'conservative' ? '稳妥' : cand.def.style === 'expressive' ? '鲜明' : '实验'}
+              </span>
+            )}
+          </div>
+          <div className={`${comparisonMode ? 'mt-1 line-clamp-3 min-h-8 leading-relaxed' : 'truncate'} text-[9px] text-neutral-400`}>{variantBlurb}</div>
         </div>
         <button
-          disabled={!ready || isSelected || isLocking}
+          disabled={!ready || isSelected || isLocking || interactionLocked}
           onClick={(e) => {
             e.stopPropagation()
             handleConfirm()
@@ -332,11 +352,12 @@ function CandidateCard({
           {!isSelected && (
             <button
               type="button"
+              disabled={interactionLocked}
               onClick={(event) => {
                 event.stopPropagation()
                 onReroll()
               }}
-              className="shrink-0 rounded-full bg-amber-400 px-2 py-1 text-[8px] font-extrabold text-amber-950 hover:bg-amber-300"
+              className="shrink-0 rounded-full bg-amber-400 px-2 py-1 text-[8px] font-extrabold text-amber-950 hover:bg-amber-300 disabled:cursor-not-allowed disabled:opacity-40"
             >
               换一个
             </button>
@@ -350,6 +371,115 @@ function CandidateCard({
   )
 }
 
+function CandidateCompareModal({
+  slot,
+  cssVariables,
+  elapsedFor,
+  workingCount,
+  onClose,
+  onTryOn,
+  onConfirm,
+  onReroll,
+  interactionLocked,
+}: {
+  slot: SlotState
+  cssVariables: Record<string, string>
+  elapsedFor: (candidateId: string) => number
+  workingCount: number
+  onClose: () => void
+  onTryOn: (candidateId: string) => void
+  onConfirm: (candidateId: string) => void
+  onReroll: (candidateId: string) => void
+  interactionLocked: boolean
+}) {
+  const closeRef = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    closeRef.current?.focus()
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [onClose])
+
+  return createPortal(
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="candidate-compare-title"
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-neutral-950/45 p-3 backdrop-blur-md md:p-6"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose()
+      }}
+    >
+      <div className="anim-pop flex max-h-[94vh] w-full max-w-[1180px] flex-col overflow-hidden rounded-[32px] border border-white/70 bg-neutral-50/95 shadow-2xl ring-1 ring-neutral-950/10">
+        <header className="flex shrink-0 items-center gap-3 border-b border-neutral-200/70 bg-white/80 px-4 py-3 backdrop-blur-xl md:px-6 md:py-4">
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-2xl bg-violet-100 text-violet-700 shadow-sm">
+            <Columns3 size={19} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <h2 id="candidate-compare-title" className="truncate text-sm font-extrabold text-neutral-900 md:text-base">
+              并排比较 · {slot.def.role}
+            </h2>
+            <p className="mt-0.5 text-[10px] text-neutral-500 md:text-xs">同尺寸看结构与细节，先试穿整页效果，再把喜欢的方案扣合进去。</p>
+          </div>
+          <span className="hidden rounded-full bg-neutral-100 px-3 py-1.5 text-[10px] font-bold text-neutral-500 sm:block">
+            {slot.candidates.length} 个方案
+          </span>
+          <button
+            ref={closeRef}
+            type="button"
+            onClick={onClose}
+            aria-label="关闭候选比较"
+            className="hover-pop flex size-10 shrink-0 items-center justify-center rounded-2xl bg-neutral-900 text-white shadow-lg transition hover:bg-neutral-700"
+          >
+            <X size={17} />
+          </button>
+        </header>
+
+        <div className="min-h-0 flex-1 overflow-x-auto overflow-y-auto px-4 py-5 md:px-6 md:py-6">
+          <div className="mx-auto flex w-max min-w-full items-stretch justify-start gap-4 md:justify-center md:gap-5">
+            {slot.candidates.slice(0, 3).map((candidate, index) => (
+              <div
+                key={candidate.def.id}
+                className="relative w-[min(82vw,350px)] shrink-0 animate-in fade-in slide-in-from-bottom-3"
+                style={{ animationDelay: `${index * 70}ms` }}
+              >
+                <CandidateCard
+                  cand={candidate}
+                  previewH={slot.def.previewH}
+                  isTryOn={slot.tryOnId === candidate.def.id}
+                  isSelected={slot.selectedId === candidate.def.id}
+                  slotSelected={slot.status === 'selected'}
+                  elapsedMs={elapsedFor(candidate.def.id)}
+                  workingElsewhere={workingCount}
+                  onTryOn={() => onTryOn(candidate.def.id)}
+                  onConfirm={() => onConfirm(candidate.def.id)}
+                  onReroll={() => onReroll(candidate.def.id)}
+                  cssVariables={cssVariables}
+                  comparisonMode
+                  interactionLocked={interactionLocked}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <footer className="flex shrink-0 items-center justify-center gap-2 border-t border-neutral-200/70 bg-white/75 px-4 py-3 text-center text-[10px] font-semibold text-neutral-500 backdrop-blur-xl">
+          <MousePointer2 size={12} /> 点击卡片即可在中间画布试穿 · 左右滑动查看更多
+        </footer>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
 /** 整条候选轨共用一个计时器：now 每 500ms 前进一次，每张卡记一次开工/收工时刻。 */
 type RailClock = { now: number; startedAt: Record<string, number>; settledAt: Record<string, number> }
 const EMPTY_CLOCK: RailClock = { now: 0, startedAt: {}, settledAt: {} }
@@ -359,8 +489,12 @@ export default function CandidateRail() {
   const cssVariables = getDirection(directionId ?? 'apple').vars
   const scrollRef = useRef<HTMLDivElement>(null)
   const lastIdx = useRef(-1)
+  const [compareSlotId, setCompareSlotId] = useState<string | null>(null)
+  const closeCompare = useCallback(() => setCompareSlotId(null), [])
+  const interactionLocked = phase === 'reviewing'
 
   const activeSlot = slots.find((s) => s.def.id === activeSlotId) ?? slots.find((s) => s.status !== 'selected') ?? null
+  const compareSlot = slots.find((slot) => slot.def.id === compareSlotId) ?? null
   const canExpandActive = harnessMode === 'kimi'
     && getActiveHarness()?.phase === 'selecting'
     && Boolean(activeSlot)
@@ -426,12 +560,12 @@ export default function CandidateRail() {
     if (best >= 0 && best !== lastIdx.current) {
       lastIdx.current = best
       const cand = activeSlot.candidates[best]
-      if (cand && cand.status === 'rendered') {
+      if (!interactionLocked && cand && cand.status === 'rendered') {
         tryOn(activeSlot.def.id, cand.def.id)
         playTick(best)
       }
     }
-  }, [activeSlot, tryOn])
+  }, [activeSlot, interactionLocked, tryOn])
 
   useEffect(() => {
     lastIdx.current = -1
@@ -457,6 +591,7 @@ export default function CandidateRail() {
   }
 
   return (
+    <>
     <aside className="w-60 md:w-64 xl:w-72 shrink-0 m-3 mt-0 rounded-3xl border border-white/60 bg-white/70 backdrop-blur-xl shadow-lg flex flex-col min-h-0 overflow-hidden">
       {/* 槽位切换 */}
       <div className="px-3 pt-3 pb-2">
@@ -466,6 +601,7 @@ export default function CandidateRail() {
             <button
               key={s.def.id}
               onClick={() => {
+                setCompareSlotId(null)
                 setActiveSlot(s.def.id)
                 playClick()
               }}
@@ -509,6 +645,7 @@ export default function CandidateRail() {
               onConfirm={() => confirmCandidate(activeSlot.def.id, c.def.id)}
               onReroll={() => rerollCandidate(activeSlot.def.id, c.def.id)}
               cssVariables={cssVariables}
+              interactionLocked={interactionLocked}
             />
           ))}
           {!activeSlot && (
@@ -520,7 +657,21 @@ export default function CandidateRail() {
       </div>
 
       <div className="px-4 py-2.5 text-[9px] text-neutral-400 leading-relaxed">
-        {canExpandActive && activeSlot && (
+        {activeSlot && activeSlot.candidates.length >= 2 && (
+          <button
+            type="button"
+            onClick={() => {
+              setCompareSlotId(activeSlot.def.id)
+              playClick()
+            }}
+            className="group mb-2 flex w-full items-center justify-center gap-2 rounded-2xl bg-neutral-900 px-3 py-2.5 text-[10px] font-extrabold text-white shadow-lg transition duration-300 hover:-translate-y-0.5 hover:bg-violet-700 hover:shadow-violet-300/40 active:scale-[0.98]"
+          >
+            <Columns3 size={13} className="transition-transform duration-300 group-hover:rotate-6 group-hover:scale-110" />
+            展开比较 {activeSlot.candidates.length} 个方案
+            <Sparkles size={11} className="text-amber-300 transition-transform duration-300 group-hover:rotate-12" />
+          </button>
+        )}
+        {canExpandActive && activeSlot && !interactionLocked && (
           <button
             type="button"
             onClick={() => expandCandidates(activeSlot.def.id)}
@@ -532,5 +683,23 @@ export default function CandidateRail() {
         滚动或点击卡片即「试穿」；扣合后仍可随时试穿其他候选并「替换」✨
       </div>
     </aside>
+    {compareSlot && compareSlot.candidates.length >= 2 && (
+      <CandidateCompareModal
+        slot={compareSlot}
+        cssVariables={cssVariables}
+        elapsedFor={elapsedFor}
+        workingCount={workingCount}
+        onClose={closeCompare}
+        onTryOn={(candidateId) => {
+          setActiveSlot(compareSlot.def.id)
+          tryOn(compareSlot.def.id, candidateId)
+          playClick()
+        }}
+        onConfirm={(candidateId) => confirmCandidate(compareSlot.def.id, candidateId)}
+        onReroll={(candidateId) => rerollCandidate(compareSlot.def.id, candidateId)}
+        interactionLocked={interactionLocked}
+      />
+    )}
+    </>
   )
 }

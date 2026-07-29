@@ -9,7 +9,17 @@ import { DIRECTIONS, getDirection } from './dna'
 import * as sfx from './sound'
 import { HarnessSession, SandboxRuntimeAdapter, harnessStorage, hasKimiApiKey, loadKimiSettings } from './harness/index.ts'
 import { classifyError } from './harness/errors.ts'
+import {
+  checkoutBranch as checkoutRevisionBranch,
+  commit as commitRevision,
+  createRepository,
+  fork as forkRevisionBranch,
+  redo as redoRevision,
+  restore as restoreRevisionState,
+  undo as undoRevision,
+} from './harness/revisions.ts'
 import type { ErrorKind, ErrorSurface, ErrorVerdict } from './harness/errors.ts'
+import type { CandidateArtifactMap, Checkout, Repository, SlotSelectionMap } from './harness/revisions.ts'
 import type { CandidateArtifact, EventEnvelope, HarnessSnapshot, PagePlan, VisualDirection } from './harness/types.ts'
 
 export type Phase = 'idle' | 'planning' | 'blueprint' | 'direction' | 'generating' | 'reviewing' | 'done'
@@ -132,6 +142,9 @@ interface Store {
   activeSlotId: string | null
   chat: ChatMsg[]
   history: HistoryItem[]
+  /** Append-only design-decision history. Unlike `history`, every node is restorable. */
+  revisionRepo: Repository | null
+  revisionBusy: boolean
   reviewSteps: ReviewStep[]
   reviewCursor: number
   tweaks: Tweaks
@@ -167,6 +180,8 @@ interface Store {
   confirmCandidate: (slotId: string, candId: string) => void
   setActiveSlot: (slotId: string) => void
   undo: () => void
+  redo: () => void
+  restoreRevision: (revisionId: string) => void
   switchBranch: (id: string) => void
   stopGeneration: () => void
   regenerate: () => void
@@ -187,6 +202,10 @@ interface Store {
 let activeHarness: HarnessSession | null = null
 let unsubscribeHarness: (() => void) | null = null
 let directionMigrationRunning = false
+let revisionUid = 1
+
+const revisionId = (kind: string) => `${kind}-${now()}-${revisionUid++}`
+const directionBranchId = (directionId: string) => `direction:${directionId}`
 
 function EmptyGeneratedComponent() {
   return null
@@ -321,6 +340,97 @@ export const useStore = create<Store>((set, get) => {
     patchSlot(slotId, (sl) => ({
       candidates: sl.candidates.map((c) => (c.def.id === candId ? { ...c, ...fn(c) } : c)),
     }))
+
+  const committedSelections = (slots = get().slots): SlotSelectionMap => Object.fromEntries(
+    slots.flatMap((slot) => slot.selectedId ? [[slot.def.id, slot.selectedId] as const] : []),
+  )
+
+  const committedArtifacts = (slots = get().slots): CandidateArtifactMap => Object.fromEntries(
+    slots.flatMap((slot) => slot.candidates.flatMap((candidate) => candidate.artifact
+      ? [[candidate.def.id, candidate.artifact] as const]
+      : [])),
+  )
+
+  const createDirectionRepository = (directionId: string, selections: SlotSelectionMap = {}, artifacts: CandidateArtifactMap = {}) => {
+    const direction = getDirection(directionId)
+    return createRepository({
+      revisionId: revisionId('root'),
+      branchId: directionBranchId(directionId),
+      branchName: direction.name,
+      directionId,
+      selections,
+      artifacts,
+      label: `选定视觉底板 · ${direction.name}`,
+      ts: now(),
+    })
+  }
+
+  /** Paint a committed revision without reviving ephemeral generation state. */
+  const applyRevisionView = (view: Pick<Checkout, 'directionId' | 'selections' | 'artifacts'>, repo: Repository) => {
+    set((state) => ({
+      phase: state.slots.length > 0 && state.slots.every((slot) => Boolean(view.selections[slot.def.id])) ? 'done' : 'generating',
+      revisionRepo: repo,
+      directionId: view.directionId,
+      starOpen: state.slots.length > 0 && state.slots.every((slot) => Boolean(view.selections[slot.def.id])) ? state.starOpen : false,
+      slots: state.slots.map((slot) => {
+        const selectedId = view.selections[slot.def.id]
+        const candidates = slot.candidates.map((candidate) => {
+          const artifact = view.artifacts[candidate.def.id]
+          if (artifact) return {
+            ...candidate,
+            artifact,
+            lastGoodArtifact: undefined,
+            code: artifact.files.map((file) => file.content).join('\n'),
+            progress: artifact.files.reduce((total, file) => total + file.content.length, 0),
+            status: artifact.runtimeStatus === 'rendered' ? 'rendered' as const : artifact.runtimeStatus === 'compile_failed' ? 'failed' as const : 'compiling' as const,
+            error: artifact.compileErrors[0],
+          }
+          // Revisions are sparse overlays over the candidate pool. A candidate
+          // generated after this decision remains available; only ids captured
+          // by the revision are rewound to their exact historical source.
+          return candidate
+        })
+        if (selectedId) {
+          return { ...slot, candidates, status: 'selected' as const, selectedId, tryOnId: selectedId }
+        }
+        const hasRendered = candidates.some((candidate) => candidate.status === 'rendered')
+        return {
+          ...slot,
+          candidates,
+          status: hasRendered ? 'ready' as const : candidates.length ? 'generating' as const : 'planned' as const,
+          selectedId: undefined,
+          tryOnId: candidates.find((candidate) => candidate.status === 'rendered')?.def.id,
+        }
+      }),
+      activeSlotId: state.activeSlotId ?? state.slots[0]?.def.id ?? null,
+    }))
+  }
+
+  const restoreHarnessRevision = async (view: Pick<Checkout, 'directionId' | 'selections' | 'artifacts'>, repo: Repository) => {
+    const session = activeHarness
+    if (!session || get().harnessMode !== 'kimi') return
+    await session.restoreDesignState({
+      direction: harnessDirection(view.directionId),
+      candidates: Object.values(view.artifacts),
+      selections: { ...view.selections },
+      revisionRepo: repo,
+    })
+  }
+
+  const navigateRevision = async (result: ReturnType<typeof undoRevision> | ReturnType<typeof redoRevision>, action: string) => {
+    if (!result.ok || get().revisionBusy) return
+    set({ revisionBusy: true })
+    try {
+      await restoreHarnessRevision(result.value, result.value.repo)
+      applyRevisionView(result.value, result.value.repo)
+      pushHistory(action === '撤销' ? 'undo' : 'select', `${action}到版本 · ${result.value.revision.label}`)
+      sfx.playUndo()
+    } catch (reason) {
+      reportFailure(reason, `${action}版本失败`)
+    } finally {
+      set({ revisionBusy: false })
+    }
+  }
 
   const findCandidateSlot = (candidateId: string) => get().slots.find((slot) => slot.candidates.some((candidate) => candidate.def.id === candidateId))
 
@@ -709,10 +819,36 @@ export const useStore = create<Store>((set, get) => {
     const index = get().slots.findIndex((item) => item.def.id === slotId)
     const slot = index < 0 ? undefined : get().slots[index]
     const candidate = slot?.candidates.find((item) => item.def.id === candId)
-    if (!slot || !candidate || candidate.status !== 'rendered') return
+    if (!slot || !candidate || candidate.status !== 'rendered') return null
     const replacing = slot.status === 'selected'
-    if (replacing && slot.selectedId === candId) return
+    if (replacing && slot.selectedId === candId) return null
+    let committedRepo: Repository | null = null
     patchSlot(slotId, () => ({ status: 'selected', selectedId: candId, tryOnId: candId }))
+    let currentRepo = get().revisionRepo
+    if (currentRepo && get().directionId) {
+      const artifacts = committedArtifacts()
+      const currentRevision = currentRepo.revisions[currentRepo.currentRevisionId]
+      if (Object.keys(currentRevision.artifacts ?? {}).length === 0 && Object.keys(artifacts).length > 0) {
+        const ready = commitRevision(currentRepo, {
+          id: revisionId('generated'), directionId: get().directionId!, selections: currentRevision.selections,
+          artifacts, label: '候选生成完成', ts: now(), reason: 'manual',
+        })
+        if (ready.ok) currentRepo = ready.value
+      }
+      const committed = commitRevision(currentRepo, {
+        id: revisionId('selection'),
+        directionId: get().directionId!,
+        selections: committedSelections(),
+        artifacts,
+        label: `${replacing ? '更换' : '扣合'} ${slot.def.role} ← ${candidate.def.label}`,
+        ts: now(),
+        reason: replacing ? 'replace' : 'select',
+      })
+      if (committed.ok) {
+        set({ revisionRepo: committed.value })
+        committedRepo = committed.value
+      }
+    }
     set((state) => ({ bursts: { ...state.bursts, [slotId]: Date.now() } }))
     pushHistory('select', `${replacing ? '更换' : '扣合'} ${slot.def.role} ← ${candidate.def.label}`)
     sfx.playConfirm()
@@ -741,6 +877,7 @@ export const useStore = create<Store>((set, get) => {
       }
     }
     if (get().phase === 'generating') maybeStartReview()
+    return committedRepo
   }
 
   const commitUndo = (slotId: string) => {
@@ -762,6 +899,8 @@ export const useStore = create<Store>((set, get) => {
     activeSlotId: null,
     chat: [],
     history: [],
+    revisionRepo: null,
+    revisionBusy: false,
     reviewSteps: [],
     reviewCursor: 0,
     tweaks: { density: false, elevation: false, radiusBoost: false },
@@ -836,6 +975,15 @@ export const useStore = create<Store>((set, get) => {
         harnessMode: 'kimi', harnessError: null, stopped: interrupted,
         chat: [{ id: uid++, role: 'sys', text: interrupted ? '已恢复本地项目。上次网络生成已中断，可继续补齐候选。' : '已恢复本地项目。', ts: now() }],
         history: [{ id: uid++, kind: 'sys', label: '恢复本地项目', ts: now() }],
+        revisionRepo: session.revisionRepo ?? (session.direction ? (() => {
+          const result = createDirectionRepository(
+            session.direction!.id,
+            session.selections,
+            Object.fromEntries(session.candidates.map((candidate) => [candidate.id, candidate])),
+          )
+          return result.ok ? result.value : null
+        })() : null),
+        revisionBusy: false,
         reviewSteps: snapshot.review ? [{ text: `✓ ${snapshot.review.summary}` }] : [],
       })
     },
@@ -850,6 +998,8 @@ export const useStore = create<Store>((set, get) => {
           activeSlotId: null, stopped: false, reviewSteps: [], reviewCursor: 0,
           tweaks: { density: false, elevation: false, radiusBoost: false }, startedAt: now(), tokensStreamed: 0,
           bursts: {}, bigConfetti: 0, starOpen: false, harnessMode: 'kimi', harnessError: null,
+          revisionRepo: null,
+          revisionBusy: false,
         })
         pushChat('user', text)
         pushChat('ai', '收到。真实 Planner 正在分析需求、拆分组件合同和页面槽位…')
@@ -891,6 +1041,8 @@ export const useStore = create<Store>((set, get) => {
         harnessMode: 'demo',
         harnessError: null,
         settingsOpen: false,
+        revisionRepo: null,
+        revisionBusy: false,
       })
       pushChat('user', text)
       pushChat('ai', `收到。Planner 正在把需求拆成页面计划（命中场景：${scenario.title}）…`)
@@ -924,19 +1076,23 @@ export const useStore = create<Store>((set, get) => {
       const s = get()
       if (!s.scenario || s.directionId) return
       const dir = getDirection(id)
+      const root = createDirectionRepository(id)
+      const revisionRepo = root.ok ? root.value : null
       if (s.harnessMode === 'kimi' && activeHarness) {
         const session = activeHarness
-        set({ directionId: id, phase: 'generating', stopped: false })
+        set({ directionId: id, phase: 'generating', stopped: false, revisionRepo })
         pushHistory('direction', `选定视觉底板 · 分支「${dir.name}」`)
         pushChat('ai', `底板「${dir.name}」已锁定。Motion Agent 先为每个槽位生成一个主推；可以立刻选择，也可以按槽位再叫 Product 与 Explorer 补两个方案。`)
         sfx.playStart()
-        void session.chooseVisualDirection(harnessDirection(id)).catch((reason: unknown) => {
+        void session.chooseVisualDirection(harnessDirection(id)).then(async () => {
+          if (activeHarness === session && revisionRepo) await session.setRevisionRepository(revisionRepo)
+        }).catch((reason: unknown) => {
           if (activeHarness !== session) return
           reportFailure(reason, '候选生成失败')
         })
         return
       }
-      set({ directionId: id, phase: 'generating', slots: buildSlots(s.scenario), stopped: false })
+      set({ directionId: id, phase: 'generating', slots: buildSlots(s.scenario), stopped: false, revisionRepo })
       pushHistory('direction', `选定视觉底板 · 分支「${dir.name}」`)
       pushChat('ai', `底板「${dir.name}」已锁定。Component Builders 正在并发生成 ${s.scenario.slots.length} 个槽位 × 3 个候选，完成一个渲染一个。`)
       sfx.playStart()
@@ -955,18 +1111,23 @@ export const useStore = create<Store>((set, get) => {
 
     confirmCandidate: (slotId, candId) => {
       const s = get()
+      if (s.phase === 'reviewing' || s.revisionBusy || directionMigrationRunning) return
       const slot = s.slots.find((x) => x.def.id === slotId)
       if (!slot) return
       const cand = slot.candidates.find((c) => c.def.id === candId)
       if (!cand || cand.status !== 'rendered') return
       if (s.harnessMode === 'kimi' && activeHarness) {
         const session = activeHarness
-        void session.select(slotId, candId).then(() => {
-          if (activeHarness === session) commitCandidate(slotId, candId)
+        set({ revisionBusy: true })
+        void session.select(slotId, candId).then(async () => {
+          if (activeHarness === session) {
+            const repo = commitCandidate(slotId, candId)
+            if (repo) await session.setRevisionRepository(repo)
+          }
         }).catch((reason: unknown) => {
           if (activeHarness !== session) return
           reportFailure(reason, '候选确认失败')
-        })
+        }).finally(() => set({ revisionBusy: false }))
         return
       }
       commitCandidate(slotId, candId)
@@ -980,6 +1141,11 @@ export const useStore = create<Store>((set, get) => {
 
     undo: () => {
       const s = get()
+      if (s.phase === 'reviewing' || s.revisionBusy || directionMigrationRunning) return
+      if (s.revisionRepo) {
+        void navigateRevision(undoRevision(s.revisionRepo), '撤销')
+        return
+      }
       const lastSelected = [...s.slots].reverse().find((sl) => sl.status === 'selected')
       if (!lastSelected) return
       if (s.harnessMode === 'kimi' && activeHarness) {
@@ -995,39 +1161,115 @@ export const useStore = create<Store>((set, get) => {
       commitUndo(lastSelected.def.id)
     },
 
+    redo: () => {
+      const state = get()
+      if (state.phase === 'reviewing' || state.revisionBusy || directionMigrationRunning) return
+      if (state.revisionRepo) void navigateRevision(redoRevision(state.revisionRepo), '重做')
+    },
+
+    restoreRevision: (targetRevisionId) => {
+      const state = get()
+      if (state.phase === 'reviewing' || state.revisionBusy || directionMigrationRunning || !state.revisionRepo || state.revisionRepo.currentRevisionId === targetRevisionId) return
+      const restored = restoreRevisionState(state.revisionRepo, targetRevisionId, {
+        id: revisionId('restore'),
+        label: `恢复版本 · ${state.revisionRepo.revisions[targetRevisionId]?.label ?? targetRevisionId}`,
+        ts: now(),
+      })
+      if (!restored.ok) return
+      const revision = restored.value.revisions[restored.value.currentRevisionId]
+      set({ revisionBusy: true })
+      void restoreHarnessRevision(revision, restored.value).then(() => {
+        applyRevisionView(revision, restored.value)
+        pushHistory('branch', revision.label)
+        pushChat('ai', `已非破坏地恢复「${state.revisionRepo!.revisions[targetRevisionId]?.label ?? '历史版本'}」；原来的后续版本仍然保留。`)
+        sfx.playShift()
+      }).catch((reason: unknown) => reportFailure(reason, '恢复版本失败'))
+        .finally(() => set({ revisionBusy: false }))
+    },
+
     switchBranch: (id) => {
       const s = get()
-      if (!s.directionId || s.directionId === id || directionMigrationRunning) return
-      const previousDirectionId = s.directionId
+      if (s.phase === 'reviewing' || !s.directionId || s.directionId === id || s.revisionBusy || directionMigrationRunning) return
+      const previousRepo = s.revisionRepo
+      const previousSlots = s.slots
       const dir = getDirection(id)
-      if (s.harnessMode === 'kimi' && activeHarness && ['selecting', 'complete'].includes(activeHarness.phase)) {
-        const session = activeHarness
-        const visibleCandidateIds = [...new Set(s.slots.flatMap((slot) => {
-          const fallbackId = slot.candidates.find((candidate) => candidate.status === 'rendered')?.def.id
-          return [slot.tryOnId, slot.selectedId, fallbackId].filter((candidateId): candidateId is string => Boolean(candidateId))
-        }))]
-        directionMigrationRunning = true
-        set({ directionId: id, harnessError: null })
-        pushHistory('branch', `迁移设计分支 →「${dir.name}」· 正在重构布局`)
-        pushChat('ai', `正在迁移到「${dir.name}」：保留业务合同和共享数据，但会重新设计每个可见槽位的构图、信息分组、控件和动效，不再只是换色。`)
-        sfx.playShift()
-        void session.restyleCandidates(harnessDirection(id), visibleCandidateIds).then((results) => {
-          if (activeHarness !== session) return
-          pushHistory('branch', `设计分支「${dir.name}」迁移完成 · ${results.length}/${visibleCandidateIds.length} 个槽位`)
-          pushChat('ai', `「${dir.name}」布局迁移完成：${results.length} 个可见槽位已重新构图并编译。组件合同和跨槽位数据绑定保持不变。`)
-        }).catch((reason: unknown) => {
-          if (activeHarness !== session) return
-          set({ directionId: previousDirectionId })
-          reportFailure(reason, '设计分支切换失败')
-        }).finally(() => {
-          directionMigrationRunning = false
-        })
+      const branchId = directionBranchId(id)
+      const existing = s.revisionRepo?.branches[branchId]
+      if (s.revisionRepo && existing) {
+        const checkedOut = checkoutRevisionBranch(s.revisionRepo, branchId)
+        if (!checkedOut.ok) return
+        set({ revisionBusy: true })
+        void restoreHarnessRevision(checkedOut.value, checkedOut.value.repo).then(() => {
+          applyRevisionView(checkedOut.value, checkedOut.value.repo)
+          pushHistory('branch', `切换设计分支 →「${dir.name}」`)
+          pushChat('ai', `已从版本快照切换到「${dir.name}」，无需重新调用模型。`)
+          sfx.playShift()
+        }).catch((reason: unknown) => reportFailure(reason, '设计分支切换失败'))
+          .finally(() => set({ revisionBusy: false }))
         return
       }
-      set({ directionId: id })
-      pushHistory('branch', `切换设计分支 →「${dir.name}」`)
-      pushChat('ai', `已切换到分支「${dir.name}」：${dir.concept}。组件合同不变，仅 Visual DNA 换肤。`)
+      let sourceRepo = s.revisionRepo
+      const sourceArtifacts = committedArtifacts(s.slots)
+      if (sourceRepo && Object.keys(sourceRepo.revisions[sourceRepo.currentRevisionId].artifacts ?? {}).length === 0 && Object.keys(sourceArtifacts).length > 0) {
+        const checkpoint = commitRevision(sourceRepo, {
+          id: revisionId('generated'), directionId: s.directionId, selections: committedSelections(s.slots), artifacts: sourceArtifacts,
+          label: '候选生成完成', ts: now(), reason: 'manual',
+        })
+        if (checkpoint.ok) sourceRepo = checkpoint.value
+      }
+      const forked = sourceRepo ? forkRevisionBranch(sourceRepo, {
+        branchId, name: dir.name, fromRevisionId: sourceRepo.currentRevisionId, ts: now(),
+      }) : null
+      if (s.revisionRepo && (!forked || !forked.ok)) return
+      const session = s.harnessMode === 'kimi' ? activeHarness : null
+      if (session && !['selecting', 'complete'].includes(session.phase)) return
+      const previousHarness = session?.snapshot()
+      const visibleCandidateIds = [...new Set(s.slots.flatMap((slot) => {
+        const fallbackId = slot.candidates.find((candidate) => candidate.status === 'rendered')?.def.id
+        return [slot.tryOnId, slot.selectedId, fallbackId].filter((candidateId): candidateId is string => Boolean(candidateId))
+      }))]
+      directionMigrationRunning = true
+      set({ revisionBusy: true, directionId: id, harnessError: null })
+      pushHistory('branch', `迁移设计分支 →「${dir.name}」· 正在重构布局`)
+      pushChat('ai', `正在迁移到「${dir.name}」：首次创建该分支需要模型重构；之后往返会直接恢复源码快照。`)
       sfx.playShift()
+      void (session ? session.restyleCandidates(harnessDirection(id), visibleCandidateIds) : Promise.resolve([])).then(async (results) => {
+        if (session && activeHarness !== session) return
+        const baseRepo = forked?.ok ? forked.value : null
+        if (!baseRepo) {
+          set({ directionId: id })
+          return
+        }
+        const artifacts: CandidateArtifactMap = session
+          ? Object.fromEntries(session.candidates.map((candidate) => [candidate.id, candidate]))
+          : committedArtifacts()
+        const committed = commitRevision(baseRepo, {
+          id: revisionId('visual'), directionId: id, selections: committedSelections(), artifacts,
+          label: `切换视觉底板 · ${dir.name}`, ts: now(), reason: 'visual',
+        })
+        if (!committed.ok) throw new Error(committed.error.message)
+        if (session) await session.setRevisionRepository(committed.value)
+        const revision = committed.value.revisions[committed.value.currentRevisionId]
+        applyRevisionView(revision, committed.value)
+        pushHistory('branch', `设计分支「${dir.name}」迁移完成 · ${results.length}/${visibleCandidateIds.length} 个槽位`)
+        pushChat('ai', `「${dir.name}」布局迁移完成并保存为可即时恢复的源码快照。`)
+      }).catch(async (reason: unknown) => {
+        if (session && previousHarness && previousRepo) {
+          try {
+            await session.restoreDesignState({
+              direction: previousHarness.direction!, candidates: previousHarness.candidates,
+              selections: previousHarness.selections, revisionRepo: previousRepo,
+            })
+          } catch {
+            // Keep the original failure as the user-facing cause; store rollback still happens below.
+          }
+        }
+        set({ directionId: s.directionId, revisionRepo: previousRepo, slots: previousSlots })
+        reportFailure(reason, '设计分支切换失败')
+      }).finally(() => {
+        directionMigrationRunning = false
+        set({ revisionBusy: false })
+      })
     },
 
     stopGeneration: () => {
@@ -1174,6 +1416,8 @@ export const useStore = create<Store>((set, get) => {
         activeSlotId: null,
         chat: [],
         history: [],
+        revisionRepo: null,
+        revisionBusy: false,
         reviewSteps: [],
         reviewCursor: 0,
         tweaks: { density: false, elevation: false, radiusBoost: false },

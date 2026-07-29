@@ -24,3 +24,11 @@ test('semantic bindings do not invent links for unrelated contracts', () => {
     component('hero', [], ['ctaClicked']), component('table', ['rows']),
   ]), [])
 })
+
+test('semantic bindings refuse incompatible payload and input types at runtime', () => {
+  const source = component('users', [], ['onUserSelected'])
+  const target = component('permissions', ['selectedUser'])
+  target.inputs[0].type = 'object'
+  assert.deepEqual(inferSemanticBindings([source, target]), [])
+  assert.equal(inferSemanticBindings([source, target], { requireCompatibleTypes: false }).length, 1)
+})

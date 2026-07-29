@@ -1,3 +1,6 @@
+import type { ModelRoutingOverrides } from './model-routing.ts'
+import type { Repository } from './revisions.ts'
+
 export type VisualDNA = {
   concept: string
   mood: string[]
@@ -188,6 +191,8 @@ export type HarnessSnapshot = {
   selections: Record<string, string>
   review: ReviewResult | null
   events: EventEnvelope[]
+  /** Optional for backward compatibility with snapshots written before design history existed. */
+  revisionRepo?: Repository | null
 }
 
 export type CompileResult = {
@@ -206,6 +211,8 @@ export type KimiSettings = {
   model: string
   /** Builder、Fixer 与 Revision 使用的组件代码模型。 */
   codeModel: string
+  /** 可选的角色级模型与 token 预算覆盖；缺省时保持以上两个模型的兼容路由。 */
+  roles?: ModelRoutingOverrides
   temperature: number
 }
 

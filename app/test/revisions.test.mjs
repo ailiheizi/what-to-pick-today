@@ -194,6 +194,23 @@ test('a checked-out selection map is a snapshot, not a live reference', () => {
   assert.deepEqual(unwrap(checkout(next, 'r3')).selections, { hero: 'hero-a' })
 })
 
+test('artifact source is snapshotted per revision even when candidate ids are reused', () => {
+  const oldArtifact = {
+    id: 'hero-a', componentId: 'hero', variant: 'expressive', files: [{ path: 'src/Hero.tsx', content: 'old source' }],
+    entryFile: 'src/Hero.tsx', previewProps: {}, notes: [], runtimeStatus: 'rendered', compileErrors: [], fixAttempts: 0,
+  }
+  const r1 = unwrap(commit(root(), {
+    id: 'artifact-old', directionId: 'apple', selections: { hero: 'hero-a' }, artifacts: { 'hero-a': oldArtifact }, label: 'old', ts: 2,
+  }))
+  oldArtifact.files[0].content = 'mutated outside repository'
+  const newArtifact = { ...oldArtifact, files: [{ path: 'src/Hero.tsx', content: 'new source' }] }
+  const r2 = unwrap(commit(r1, {
+    id: 'artifact-new', directionId: 'hacker', selections: { hero: 'hero-a' }, artifacts: { 'hero-a': newArtifact }, label: 'new', ts: 3,
+  }))
+  assert.equal(unwrap(checkout(r2, 'artifact-old')).artifacts['hero-a'].files[0].content, 'old source')
+  assert.equal(unwrap(checkout(r2, 'artifact-new')).artifacts['hero-a'].files[0].content, 'new source')
+})
+
 test('undo and redo traverse the DAG instead of mutating a stack', () => {
   const repo = linear()
 
@@ -413,6 +430,7 @@ test('ephemeral UI state cannot be committed', () => {
 
   // A committed revision holds only the restorable fields.
   assert.deepEqual(Object.keys(repo.revisions.r2).sort(), [
+    'artifacts',
     'branchId',
     'directionId',
     'id',

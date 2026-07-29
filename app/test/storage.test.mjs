@@ -119,6 +119,22 @@ test('20 rapid saves collapse into a single write and the last snapshot wins', a
   assert.equal(fake.rows.get('s1').requirement, 'req-19')
 })
 
+test('revision repository and artifact snapshots survive IndexedDB round-trip', async () => {
+  const fake = createFakeIndexedDB()
+  const storage = fastStorage(fake)
+  const value = snapshot('revision-persist', 2)
+  value.revisionRepo = {
+    revisions: { r0: { id: 'r0', parentId: null, branchId: 'main', directionId: 'apple', selections: { hero: 'hero-a' }, artifacts: {
+      'hero-a': { id: 'hero-a', componentId: 'hero', variant: 'expressive', files: [{ path: 'src/Hero.tsx', content: 'exact source' }], entryFile: 'src/Hero.tsx', previewProps: {}, notes: [], runtimeStatus: 'rendered', compileErrors: [], fixAttempts: 0 },
+    }, label: 'root', ts: 1, reason: 'root' } },
+    branches: { main: { id: 'main', name: '主线', headId: 'r0', parentBranchId: null, baseRevisionId: null, createdAt: 1 } },
+    currentBranchId: 'main', currentRevisionId: 'r0', redoChoice: {},
+  }
+  await storage.save(value)
+  const loaded = await storage.load(value.sessionId)
+  assert.equal(loaded.revisionRepo.revisions.r0.artifacts['hero-a'].files[0].content, 'exact source')
+})
+
 test('every save promise resolves, none are dropped', async () => {
   const fake = createFakeIndexedDB()
   const storage = fastStorage(fake)
