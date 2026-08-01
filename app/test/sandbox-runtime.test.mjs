@@ -33,6 +33,8 @@ test('sandbox transpiles TypeScript plus JSX with Babel 8 options', async () => 
   assert.match(document, /postHeight\('ready'\)/)
   assert.match(document, /ResizeObserver/)
   assert.match(document, /measureHeight/)
+  assert.match(document, /normalizeScrollableRoot/)
+  assert.match(document, /overflow-y','visible','important'/)
   assert.match(document, /type,height/)
   assert.match(document, /revisionId:"sandbox-runtime"/)
 })

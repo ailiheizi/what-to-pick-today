@@ -159,7 +159,7 @@ export async function createSandboxDocument(
   ${selectionBridge}
   <script async src="https://cdn.tailwindcss.com"></script>
   <style>
-    html,body,#root{margin:0;min-height:0;width:100%}html,body{overflow:hidden}body{background:transparent;color:var(--dna-text,#171717);font-family:var(--dna-font,system-ui,sans-serif)}*{box-sizing:border-box}
+    html,body,#root{margin:0;min-height:0;width:100%}html,body{overflow:hidden}#root{overflow:visible}#root>*{min-width:0!important;max-width:100%!important}body{background:transparent;color:var(--dna-text,#171717);font-family:var(--dna-font,system-ui,sans-serif)}*{box-sizing:border-box}
     :root{${rootVars}}
     @media (prefers-reduced-motion: reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
     ${css}
@@ -190,14 +190,25 @@ export async function createSandboxDocument(
       ${code}
       const Component=module.exports.default||module.exports.Component||module.exports;
       if(typeof Component!=='function'&&typeof Component!=='object')throw new Error('入口文件必须 default export 一个 React 组件');
-      createRoot(document.getElementById('root')).render(React.createElement(Component,${props}));
+      const rootElement=document.getElementById('root');
+      createRoot(rootElement).render(React.createElement(Component,${props}));
+      const normalizeScrollableRoot=()=>{
+        const child=rootElement?.firstElementChild;if(!child)return;
+        const style=getComputedStyle(child);
+        const clipsContent=/(auto|scroll|hidden)/.test(style.overflowY)&&child.scrollHeight>child.clientHeight+2;
+        if(!clipsContent)return;
+        child.style.setProperty('height','auto','important');
+        child.style.setProperty('min-height','0','important');
+        child.style.setProperty('max-height','none','important');
+        child.style.setProperty('overflow-y','visible','important');
+      };
       const measureHeight=()=>Math.ceil(Math.max(document.documentElement.scrollHeight,document.body.scrollHeight,document.getElementById('root')?.scrollHeight||0));
       const postHeight=(type)=>{const height=measureHeight();if(Number.isFinite(height)&&height>0)parent.postMessage({source:'wtpt-sandbox',token:${JSON.stringify(token)},revisionId:${JSON.stringify(runtimeRevisionId)},type,height},'*')};
       let resizeFrame=0;
-      const scheduleHeight=()=>{cancelAnimationFrame(resizeFrame);resizeFrame=requestAnimationFrame(()=>postHeight('resize'))};
+      const scheduleHeight=()=>{cancelAnimationFrame(resizeFrame);resizeFrame=requestAnimationFrame(()=>{normalizeScrollableRoot();postHeight('resize')})};
       const observer=new ResizeObserver(scheduleHeight);
       observer.observe(document.documentElement);observer.observe(document.body);observer.observe(document.getElementById('root'));
-      requestAnimationFrame(()=>{postHeight('ready');setTimeout(scheduleHeight,120)});
+      requestAnimationFrame(()=>{normalizeScrollableRoot();postHeight('ready');setTimeout(scheduleHeight,120)});
       document.fonts?.ready?.then(scheduleHeight);
     } catch(error) { reportSandboxError(error) }
   </script>

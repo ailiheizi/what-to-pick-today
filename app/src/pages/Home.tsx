@@ -11,7 +11,7 @@ export default function Home() {
   return (
     <div className="wallpaper h-screen w-screen flex flex-col overflow-hidden text-neutral-900">
       <TopBar />
-      <div className="flex-1 flex min-h-0 relative px-3 pb-3 gap-0">
+      <div className="flex-1 flex flex-col lg:flex-row min-h-0 relative px-3 pb-3 gap-0">
         <LeftPanel />
         <CanvasStage />
         <CandidateRail />

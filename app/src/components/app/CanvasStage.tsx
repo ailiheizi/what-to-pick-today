@@ -808,7 +808,7 @@ export default function CanvasStage() {
   const showIntegratedComposition = harnessMode === 'kimi' && slots.length > 1 && compositionEntries.length === slots.length
 
   return (
-    <main className="flex-1 min-w-0 relative">
+    <main className="flex-1 min-h-0 min-w-0 w-full relative">
       <div ref={scrollRef} className="absolute inset-0 overflow-y-auto rounded-3xl">
         {phase === 'idle' && <Welcome onPick={submitPrompt} />}
         {(phase === 'planning' || (phase === 'direction' && !scenario)) && <PlanView />}

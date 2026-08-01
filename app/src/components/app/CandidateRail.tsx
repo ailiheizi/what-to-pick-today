@@ -143,8 +143,10 @@ function CandidateCard({
   const variantBlurb = withoutPrefix(cand.def.blurb, agent.role)
   // 所有候选都在同一逻辑画布宽度内渲染，再按真实内容高度 contain 到预览框。
   // 这比固定 0.52 缩放更适合模型生成的未知尺寸组件，也保证并排比较口径一致。
-  const previewBoxH = comparisonMode ? 260 : Math.max(110, Math.min(210, previewH * 0.72))
-  const previewNaturalWidth = comparisonMode ? 720 : 640
+  const previewBoxH = comparisonMode ? 300 : Math.max(130, Math.min(240, previewH * 0.78))
+  // 侧栏候选使用真实的响应式组件宽度，而不是把 640px 桌面稿硬缩成缩略图。
+  // 420px 足以触发模型组件的移动/平板布局，文本在窄窗口里仍然可读。
+  const previewNaturalWidth = comparisonMode ? 720 : 420
   const roomyPreview = previewBoxH >= 72
   const [isLocking, setIsLocking] = useState(false)
   const [previewNaturalHeight, setPreviewNaturalHeight] = useState(Math.max(previewH, 140))
@@ -192,7 +194,7 @@ function CandidateCard({
       data-stage={activity.stage}
       data-state={isSelected ? 'selected' : isTryOn ? 'trying' : 'idle'}
       onClick={() => ready && !interactionLocked && onTryOn()}
-      className={`candidate-choice-card group relative ${comparisonMode ? 'h-full' : 'snap-center shrink-0'} rounded-2xl border bg-white overflow-hidden ${
+      className={`candidate-choice-card group relative ${comparisonMode ? 'h-full' : 'w-64 lg:w-auto snap-center shrink-0'} rounded-2xl border bg-white overflow-hidden ${
         ready ? 'cursor-pointer' : ''
       } ${failed ? 'candidate-choice-failed' : queued ? 'candidate-choice-queued' : ''} ${
         isLocking
@@ -263,7 +265,7 @@ function CandidateCard({
         )}
       </div>
       {/* 实时预览：按组件真实高度完整装入，而不是裁掉底部。 */}
-      <div ref={previewViewportRef} className="relative bg-neutral-50 border-b border-neutral-100 overflow-hidden" style={{ height: previewBoxH }}>
+      <div ref={previewViewportRef} className="relative hidden lg:block bg-neutral-50 border-b border-neutral-100 overflow-hidden" style={{ height: previewBoxH }}>
         {ready ? (
           <div
             className="pointer-events-none absolute left-1/2 top-1/2 origin-center transition-transform duration-300"
@@ -580,13 +582,17 @@ export default function CandidateRail() {
   const handleScroll = useCallback(() => {
     const el = scrollRef.current
     if (!el || !activeSlot) return
-    const center = el.getBoundingClientRect().top + el.clientHeight / 2
+    const horizontal = window.matchMedia('(max-width: 1023px)').matches
+    const bounds = el.getBoundingClientRect()
+    const center = horizontal ? bounds.left + el.clientWidth / 2 : bounds.top + el.clientHeight / 2
     const cards = Array.from(el.querySelectorAll<HTMLElement>('[data-cand-card]'))
     let best = -1
     let bestDist = Infinity
     cards.forEach((c, i) => {
       const r = c.getBoundingClientRect()
-      const d = Math.abs(r.top + r.height / 2 - center)
+      const d = horizontal
+        ? Math.abs(r.left + r.width / 2 - center)
+        : Math.abs(r.top + r.height / 2 - center)
       if (d < bestDist) {
         bestDist = d
         best = i
@@ -604,17 +610,17 @@ export default function CandidateRail() {
 
   useEffect(() => {
     lastIdx.current = -1
-    scrollRef.current?.scrollTo({ top: 0 })
+    scrollRef.current?.scrollTo({ top: 0, left: 0 })
   }, [activeSlot?.def.id])
 
   if (phase !== 'generating' && phase !== 'reviewing' && phase !== 'done') {
     return (
-      <aside className={`${phase === 'blueprint' || phase === 'direction' ? 'hidden' : 'flex'} w-60 md:w-64 xl:w-72 shrink-0 m-3 mt-0 rounded-3xl border border-white/60 bg-white/70 backdrop-blur-xl shadow-lg flex-col items-center justify-center px-5 xl:px-6 text-center`}>
+      <aside className={`${phase === 'blueprint' || phase === 'direction' ? 'hidden' : 'flex'} h-28 w-full lg:h-auto lg:w-64 xl:w-72 shrink-0 mt-3 lg:m-3 lg:mt-0 rounded-3xl border border-white/60 bg-white/70 backdrop-blur-xl shadow-lg flex-col items-center justify-center px-5 xl:px-6 text-center`}>
         <div className="anim-float">
           <Layers size={22} className="text-neutral-300" />
         </div>
         <div className="mt-3 text-xs font-bold text-neutral-500">AI 候选区</div>
-        <div className="mt-1.5 text-[10px] leading-relaxed text-neutral-400">
+        <div className="mt-1.5 hidden lg:block text-[10px] leading-relaxed text-neutral-400">
           生成开始后，这里会实时出现
           <br />
           {harnessMode === 'kimi' ? '每个槽位先出 1 个主推，需要时再补两个。' : '每个槽位的 3 个候选。'}
@@ -627,11 +633,11 @@ export default function CandidateRail() {
 
   return (
     <>
-    <aside className="w-60 md:w-64 xl:w-72 shrink-0 m-3 mt-0 rounded-3xl border border-white/60 bg-white/70 backdrop-blur-xl shadow-lg flex flex-col min-h-0 overflow-hidden">
+    <aside className="h-[230px] min-h-[210px] w-full lg:h-auto lg:min-h-0 lg:w-64 xl:w-72 shrink-0 mt-3 lg:m-3 lg:mt-0 rounded-3xl border border-white/60 bg-white/70 backdrop-blur-xl shadow-lg flex flex-col overflow-hidden">
       {/* 槽位切换 */}
       <div className="px-3 pt-3 pb-2">
         <div className="text-[10px] font-semibold tracking-widest uppercase text-neutral-400 mb-2">槽位 · 逐个挑选</div>
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-nowrap lg:flex-wrap gap-1.5 overflow-x-auto lg:overflow-visible pb-1 lg:pb-0">
           {slots.map((s) => (
             <button
               key={s.def.id}
@@ -657,12 +663,12 @@ export default function CandidateRail() {
 
       {/* 候选滚动区 + 中心选择线 */}
       <div className="relative flex-1 min-h-0">
-        <div className="candidate-selection-guide pointer-events-none absolute left-2 right-2 top-1/2 -translate-y-1/2 z-10 flex items-center gap-1 rounded-2xl px-1 py-2.5">
+        <div className="candidate-selection-guide pointer-events-none absolute left-1/2 top-2 bottom-2 -translate-x-1/2 z-10 hidden lg:flex lg:left-2 lg:right-2 lg:top-1/2 lg:bottom-auto lg:translate-x-0 lg:-translate-y-1/2 items-center gap-1 rounded-2xl px-1 py-2.5">
           <div className="h-px flex-1 bg-neutral-900/30 rounded-full" />
           <span className="text-[8px] font-bold text-neutral-600 bg-white rounded-full px-2 py-1 shadow-md ring-1 ring-neutral-900/10">试穿位置</span>
           <div className="h-px flex-1 bg-neutral-900/30 rounded-full" />
         </div>
-        <div ref={scrollRef} onScroll={handleScroll} className="h-full overflow-y-auto snap-y snap-mandatory px-3 py-[38%] space-y-3">
+        <div ref={scrollRef} onScroll={handleScroll} className="flex h-full overflow-x-auto overflow-y-hidden snap-x snap-mandatory gap-3 px-[28%] py-3 lg:block lg:overflow-x-hidden lg:overflow-y-auto lg:snap-x-none lg:snap-y lg:px-3 lg:py-[38%] lg:space-y-3">
           {activeSlot?.candidates.map((c) => (
             <CandidateCard
               key={c.def.id}
@@ -691,7 +697,7 @@ export default function CandidateRail() {
         </div>
       </div>
 
-      <div className="px-4 py-2.5 text-[9px] text-neutral-400 leading-relaxed">
+      <div className="hidden lg:block px-4 py-2.5 text-[9px] text-neutral-400 leading-relaxed">
         {activeSlot && activeSlot.candidates.length >= 2 && (
           <button
             type="button"
