@@ -5,7 +5,7 @@ import type { Scenario, SlotDef } from '../../candidates/types'
 import { DIRECTIONS, getDirection } from '../../lib/dna'
 import { EXAMPLE_PROMPTS } from '../../lib/scenarios'
 import { inferSemanticBindings, signalName } from '../../lib/harness/bindings'
-import { DASHBOARD_SLOT_PATTERNS, LANDING_SLOT_PATTERNS, pickDistinctSemanticSlots } from '../../lib/harness/layout'
+import { DASHBOARD_SLOT_PATTERNS, LANDING_SLOT_PATTERNS, overviewScale, pickDistinctSemanticSlots } from '../../lib/harness/layout'
 import { ConfettiBurst, ConfettiRain, FloatingEmojis } from './playful'
 import GeneratedCandidatePreview from './GeneratedCandidatePreview'
 import GeneratedCompositionPreview from './GeneratedCompositionPreview'
@@ -757,6 +757,9 @@ export default function CanvasStage() {
   const { phase, slots, activeSlotId, directionId, scenario, tweaks, submitPrompt, bigConfetti, harnessMode, setActiveSlot, tryOn } = useStore()
   const dir = getDirection(directionId ?? 'apple')
   const scrollRef = useRef<HTMLDivElement>(null)
+  const frameRef = useRef<HTMLDivElement>(null)
+  const [canvasView, setCanvasView] = useState<'width' | 'overview'>('width')
+  const [overview, setOverview] = useState({ scale: 1, contentHeight: 0 })
 
   const vars = useMemo(() => {
     const v = { ...dir.vars } as Record<string, string>
@@ -772,14 +775,30 @@ export default function CanvasStage() {
   }, [phase])
 
   useEffect(() => {
-    if (!activeSlotId || !['generating', 'reviewing', 'done'].includes(phase)) return
+    if (canvasView === 'overview' || !activeSlotId || !['generating', 'reviewing', 'done'].includes(phase)) return
     const timer = window.setTimeout(() => {
       const target = [...(scrollRef.current?.querySelectorAll<HTMLElement>('[data-canvas-slot]') ?? [])]
         .find((element) => element.dataset.canvasSlot === activeSlotId)
       target?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' })
     }, 80)
     return () => window.clearTimeout(timer)
-  }, [activeSlotId, phase])
+  }, [activeSlotId, canvasView, phase])
+
+  useEffect(() => {
+    if (canvasView !== 'overview') return
+    const frame = frameRef.current
+    const viewport = scrollRef.current
+    if (!frame || !viewport) return
+    const update = () => {
+      const contentHeight = Math.max(frame.scrollHeight, frame.getBoundingClientRect().height)
+      setOverview({ scale: overviewScale(viewport.clientHeight, contentHeight), contentHeight })
+    }
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(frame)
+    observer.observe(viewport)
+    return () => observer.disconnect()
+  }, [canvasView, phase, slots])
 
   const [dashboardHeader, dashboardSidebar, dashboardStats, dashboardChart, dashboardTable] = pickDistinctSemanticSlots(
     slots,
@@ -817,13 +836,38 @@ export default function CanvasStage() {
 
         {(phase === 'generating' || phase === 'reviewing' || phase === 'done') && scenario && (
           <div className="min-h-full px-5 pt-4 pb-32">
+            <div className="relative z-30 mx-auto mb-2 flex max-w-4xl justify-end">
+              <div className="flex items-center gap-1 rounded-full border border-white/70 bg-white/85 p-1 text-[9px] font-bold text-neutral-500 shadow-lg backdrop-blur-xl">
+                <button
+                  type="button"
+                  onClick={() => setCanvasView('width')}
+                  className={`rounded-full px-3 py-1.5 transition ${canvasView === 'width' ? 'bg-neutral-900 text-white shadow' : 'hover:bg-neutral-100'}`}
+                >
+                  适应宽度
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCanvasView('overview')}
+                  className={`flex items-center gap-1 rounded-full px-3 py-1.5 transition ${canvasView === 'overview' ? 'bg-violet-600 text-white shadow' : 'hover:bg-neutral-100'}`}
+                >
+                  <ScanSearch size={10} /> 整页概览
+                </button>
+              </div>
+            </div>
             <div
+              ref={frameRef}
               className="anim-frame-in relative mx-auto max-w-4xl rounded-[28px] overflow-hidden shadow-2xl transition-colors duration-500 border border-white/50"
               style={{
                 ...(vars as React.CSSProperties),
                 background: 'var(--dna-bg)',
                 fontFamily: 'var(--dna-font)',
                 ...(glass ? { backdropFilter: 'blur(28px) saturate(180%)', WebkitBackdropFilter: 'blur(28px) saturate(180%)' } : {}),
+                ...(canvasView === 'overview' ? {
+                  transform: `scale(${overview.scale})`,
+                  transformOrigin: 'top center',
+                  marginBottom: `${-overview.contentHeight * (1 - overview.scale)}px`,
+                  transition: 'transform 360ms ease, margin-bottom 360ms ease, background-color 500ms ease',
+                } : {}),
               }}
             >
               {/* 风格氛围层：黑客=CRT 扫描线组，复古=纸张颗粒 */}
@@ -873,7 +917,7 @@ export default function CanvasStage() {
             <div className="mx-auto max-w-4xl mt-3 flex items-center justify-between text-[10px] text-neutral-500">
               <span>沙箱预览 · iframe 隔离 + CSP + 依赖白名单（{harnessMode === 'kimi' ? '真实生成' : '演示模式'}）</span>
               <span className="font-mono">
-                {scenario.slots.length} slots · {Math.max(candidateTotal, scenario.slots.length)} candidates
+                {canvasView === 'overview' ? `${Math.round(overview.scale * 100)}% overview · ` : ''}{scenario.slots.length} slots · {Math.max(candidateTotal, scenario.slots.length)} candidates
               </span>
             </div>
           </div>

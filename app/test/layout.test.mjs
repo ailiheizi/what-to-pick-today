@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   DASHBOARD_SLOT_PATTERNS,
   inferGeneratedLayout,
+  overviewScale,
   pickDistinctSemanticSlots,
 } from '../src/lib/harness/layout.ts'
 
@@ -47,4 +48,11 @@ test('component structure can infer landing and dashboard layouts', () => {
   assert.equal(inferGeneratedLayout(plan([
     component('metrics', '核心指标'), component('trend', '收入趋势'), component('orders', '订单表格'),
   ])), 'dashboard')
+})
+
+test('overview scale fits long pages while keeping a usable lower bound', () => {
+  assert.equal(overviewScale(720, 600), 1)
+  assert.equal(overviewScale(720, 1200), 0.5)
+  assert.equal(overviewScale(500, 5000), 0.18)
+  assert.equal(overviewScale(Number.NaN, 1200), 1)
 })

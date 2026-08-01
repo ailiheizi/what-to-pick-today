@@ -52,3 +52,9 @@ export function inferGeneratedLayout(plan: PagePlan): Scenario['layout'] {
   if (landingSignals >= 2 && landingSignals > dashboardSignals) return 'landing'
   return 'freeform'
 }
+
+export function overviewScale(viewportHeight: number, contentHeight: number, reservedHeight = 120) {
+  if (!Number.isFinite(viewportHeight) || !Number.isFinite(contentHeight) || contentHeight <= 0) return 1
+  const availableHeight = Math.max(120, viewportHeight - reservedHeight)
+  return Math.max(0.18, Math.min(1, availableHeight / contentHeight))
+}
