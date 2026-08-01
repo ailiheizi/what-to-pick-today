@@ -28,8 +28,9 @@ type SandboxRuntimeMessage = {
   source: 'wtpt-sandbox'
   token: string
   revisionId: string
-  type: 'ready' | 'error'
+  type: 'ready' | 'resize' | 'error'
   error?: string
+  height?: number
 }
 
 export function isSandboxSelectionMessage(
@@ -59,12 +60,16 @@ export function isSandboxRuntimeMessage(
 ): event is MessageEvent<SandboxRuntimeMessage> {
   if (!sourceWindow || event.source !== sourceWindow) return false
   const data = event.data as Partial<SandboxRuntimeMessage> | null
+  const validHeight = data?.height === undefined
+    || (typeof data.height === 'number' && Number.isFinite(data.height) && data.height > 0)
   return Boolean(
     data
     && data.source === 'wtpt-sandbox'
-    && (data.type === 'ready' || data.type === 'error')
+    && (data.type === 'ready' || data.type === 'resize' || data.type === 'error')
     && data.token === token
-    && data.revisionId === revisionId,
+    && data.revisionId === revisionId
+    && validHeight
+    && (data.type !== 'resize' || data.height !== undefined),
   )
 }
 
@@ -147,7 +152,7 @@ export async function createSandboxDocument(
   ${selectionBridge}
   <script async src="https://cdn.tailwindcss.com"></script>
   <style>
-    html,body,#root{margin:0;min-height:100%;width:100%;overflow:auto}body{background:transparent;color:var(--dna-text,#171717);font-family:var(--dna-font,system-ui,sans-serif)}*{box-sizing:border-box}
+    html,body,#root{margin:0;min-height:0;width:100%}html,body{overflow:hidden}body{background:transparent;color:var(--dna-text,#171717);font-family:var(--dna-font,system-ui,sans-serif)}*{box-sizing:border-box}
     :root{${rootVars}}
     @media (prefers-reduced-motion: reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
     ${css}
@@ -179,7 +184,14 @@ export async function createSandboxDocument(
       const Component=module.exports.default||module.exports.Component||module.exports;
       if(typeof Component!=='function'&&typeof Component!=='object')throw new Error('入口文件必须 default export 一个 React 组件');
       createRoot(document.getElementById('root')).render(React.createElement(Component,${props}));
-      setTimeout(()=>parent.postMessage({source:'wtpt-sandbox',token:${JSON.stringify(token)},revisionId:${JSON.stringify(runtimeRevisionId)},type:'ready'},'*'),0);
+      const measureHeight=()=>Math.ceil(Math.max(document.documentElement.scrollHeight,document.body.scrollHeight,document.getElementById('root')?.scrollHeight||0));
+      const postHeight=(type)=>{const height=measureHeight();if(Number.isFinite(height)&&height>0)parent.postMessage({source:'wtpt-sandbox',token:${JSON.stringify(token)},revisionId:${JSON.stringify(runtimeRevisionId)},type,height},'*')};
+      let resizeFrame=0;
+      const scheduleHeight=()=>{cancelAnimationFrame(resizeFrame);resizeFrame=requestAnimationFrame(()=>postHeight('resize'))};
+      const observer=new ResizeObserver(scheduleHeight);
+      observer.observe(document.documentElement);observer.observe(document.body);observer.observe(document.getElementById('root'));
+      requestAnimationFrame(()=>{postHeight('ready');setTimeout(scheduleHeight,120)});
+      document.fonts?.ready?.then(scheduleHeight);
     } catch(error) { reportSandboxError(error) }
   </script>
 </body>
@@ -280,10 +292,10 @@ export async function createCompositionSandboxDocument(
   </script>
   <script async src="https://cdn.tailwindcss.com"></script>
   <style>
-    html,body,#root{margin:0;min-height:100%;width:100%}body{overflow:auto;background:var(--dna-bg,#fff);color:var(--dna-text,#171717);font-family:var(--dna-font,system-ui,sans-serif)}*{box-sizing:border-box}:root{${rootVars}}
-    .composition-root{min-height:100%;display:flex;flex-direction:column;background:var(--dna-bg,#fff);color:var(--dna-text,#171717)}
+    html,body,#root{margin:0;min-height:0;width:100%}body{overflow:hidden;background:var(--dna-bg,#fff);color:var(--dna-text,#171717);font-family:var(--dna-font,system-ui,sans-serif)}*{box-sizing:border-box}:root{${rootVars}}
+    .composition-root{min-height:0;display:flex;flex-direction:column;background:var(--dna-bg,#fff);color:var(--dna-text,#171717)}
     .composition-slot{position:relative;min-width:0;isolation:isolate;outline:0 solid transparent;transition:outline-color .2s ease,filter .2s ease}
-    .composition-slot> :first-child{min-height:0!important;height:auto!important;background-color:transparent!important}
+    .composition-slot> :first-child{min-height:0!important;min-width:0;max-width:100%}
     .composition-slot.is-active{outline:2px solid color-mix(in srgb,var(--dna-accent,#7c3aed) 65%,transparent);outline-offset:-2px}
     .composition-slot::before{content:attr(data-slot-label);position:absolute;z-index:999;top:8px;left:12px;max-width:calc(100% - 24px);padding:4px 9px;border-radius:999px;background:color-mix(in srgb,var(--dna-surface,#fff) 86%,transparent);color:var(--dna-text,#171717);box-shadow:0 4px 16px rgba(0,0,0,.12);font:700 10px/1.2 system-ui,sans-serif;opacity:0;transform:translateY(-4px);pointer-events:none;transition:opacity .18s ease,transform .18s ease}
     .composition-slot:hover::before,.composition-slot.is-active::before{opacity:1;transform:translateY(0)}
@@ -314,7 +326,14 @@ export async function createCompositionSandboxDocument(
       ${factories}
       function CompositionApp(){${states}return React.createElement('main',{className:'composition-root','data-layout':${JSON.stringify(layout)},'data-direction':${JSON.stringify(directionId)}},${sections})}
       createRoot(document.getElementById('root')).render(React.createElement(CompositionApp));
-      setTimeout(()=>parent.postMessage({source:'wtpt-sandbox',token:${JSON.stringify(token)},revisionId:${JSON.stringify(revisionId)},type:'ready'},'*'),0);
+      const measureHeight=()=>Math.ceil(Math.max(document.documentElement.scrollHeight,document.body.scrollHeight,document.getElementById('root')?.scrollHeight||0));
+      const postHeight=(type)=>{const height=measureHeight();if(Number.isFinite(height)&&height>0)parent.postMessage({source:'wtpt-sandbox',token:${JSON.stringify(token)},revisionId:${JSON.stringify(revisionId)},type,height},'*')};
+      let resizeFrame=0;
+      const scheduleHeight=()=>{cancelAnimationFrame(resizeFrame);resizeFrame=requestAnimationFrame(()=>postHeight('resize'))};
+      const observer=new ResizeObserver(scheduleHeight);
+      observer.observe(document.documentElement);observer.observe(document.body);observer.observe(document.getElementById('root'));
+      requestAnimationFrame(()=>{postHeight('ready');setTimeout(scheduleHeight,120)});
+      document.fonts?.ready?.then(scheduleHeight);
     }catch(error){reportSandboxError(error)}
   </script>
 </body>

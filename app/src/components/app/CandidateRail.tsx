@@ -141,12 +141,35 @@ function CandidateCard({
   const elapsed = formatElapsed(elapsedMs)
   const variantLabel = withoutPrefix(cand.def.label, agent.name)
   const variantBlurb = withoutPrefix(cand.def.blurb, agent.role)
-  // 顶栏这类槽位的预览框只有 ~46px 高，多行说明会被裁掉。
-  // 窄框只留徽标（失败原因在上方状态条里已经完整给过一次）。
-  const previewBoxH = comparisonMode ? Math.max(180, Math.min(280, previewH * 0.78)) : previewH * 0.52
+  // 所有候选都在同一逻辑画布宽度内渲染，再按真实内容高度 contain 到预览框。
+  // 这比固定 0.52 缩放更适合模型生成的未知尺寸组件，也保证并排比较口径一致。
+  const previewBoxH = comparisonMode ? 260 : Math.max(110, Math.min(210, previewH * 0.72))
+  const previewNaturalWidth = comparisonMode ? 720 : 640
   const roomyPreview = previewBoxH >= 72
   const [isLocking, setIsLocking] = useState(false)
+  const [previewNaturalHeight, setPreviewNaturalHeight] = useState(Math.max(previewH, 140))
+  const [previewViewportWidth, setPreviewViewportWidth] = useState(320)
+  const previewViewportRef = useRef<HTMLDivElement>(null)
   const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    const node = previewViewportRef.current
+    if (!node) return
+    const update = () => setPreviewViewportWidth(node.clientWidth || 320)
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(node)
+    return () => observer.disconnect()
+  }, [])
+
+  const handlePreviewHeight = useCallback((height: number) => {
+    setPreviewNaturalHeight(Math.max(1, height))
+  }, [])
+  const previewScale = Math.min(
+    1,
+    previewViewportWidth / previewNaturalWidth,
+    previewBoxH / Math.max(previewNaturalHeight, 1),
+  )
 
   useEffect(() => () => {
     if (confirmTimer.current) clearTimeout(confirmTimer.current)
@@ -239,18 +262,30 @@ function CandidateCard({
           </div>
         )}
       </div>
-      {/* 实时预览（缩放） */}
-      <div className="relative bg-neutral-50 border-b border-neutral-100 overflow-hidden" style={{ height: previewBoxH }}>
+      {/* 实时预览：按组件真实高度完整装入，而不是裁掉底部。 */}
+      <div ref={previewViewportRef} className="relative bg-neutral-50 border-b border-neutral-100 overflow-hidden" style={{ height: previewBoxH }}>
         {ready ? (
-          <div className={`pointer-events-none origin-top-left ${cand.anim}`} style={{ width: '192%', transform: 'scale(0.52)' }}>
-            {cand.artifact ? (
-              <GeneratedCandidatePreview candidate={cand.artifact} cssVariables={cssVariables} />
-            ) : (
-              <cand.def.Component />
-            )}
+          <div
+            className="pointer-events-none absolute left-1/2 top-1/2 origin-center transition-transform duration-300"
+            style={{
+              width: previewNaturalWidth,
+              height: previewNaturalHeight,
+              transform: `translate(-50%, -50%) scale(${previewScale})`,
+            }}
+          >
+            <div className={`h-full w-full ${cand.anim}`}>
+              {cand.artifact ? (
+                <GeneratedCandidatePreview candidate={cand.artifact} cssVariables={cssVariables} onHeight={handlePreviewHeight} />
+              ) : (
+                <cand.def.Component />
+              )}
+            </div>
           </div>
         ) : cand.streamPreviewHtml ? (
-          <div className="pointer-events-none origin-top-left" style={{ width: '192%', height: previewH, transform: 'scale(0.52)' }}>
+          <div
+            className="pointer-events-none absolute left-1/2 top-1/2 origin-center"
+            style={{ width: previewNaturalWidth, height: Math.max(previewH, 140), transform: `translate(-50%, -50%) scale(${Math.min(1, previewViewportWidth / previewNaturalWidth, previewBoxH / Math.max(previewH, 140))})` }}
+          >
             <StreamingHtmlPreview html={cand.streamPreviewHtml} cssVariables={cssVariables} title={`${cand.def.label} · API 流式草图`} />
           </div>
         ) : failed ? (

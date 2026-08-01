@@ -24,6 +24,7 @@ export default function GeneratedCompositionPreview({
     candidate.files.map((file) => `${file.path}:${file.content.length}`).join(','),
   ].join(':')).join('|') + `:${directionId}:${layout}:${Object.values(cssVariables).join(':')}`, [cssVariables, directionId, entries, layout])
   const [result, setResult] = useState({ key: '', srcDoc: '', error: '', token: '', revisionId: '' })
+  const [contentHeight, setContentHeight] = useState(520)
 
   useEffect(() => {
     let current = true
@@ -49,10 +50,16 @@ export default function GeneratedCompositionPreview({
         onSelect({ slotId: event.data.slotId, candidateId: event.data.candidateId })
         return
       }
-      if (isSandboxRuntimeMessage(event, source, result.token, result.revisionId) && event.data.type === 'error') {
-        setResult((current) => current.key === renderKey
-          ? { ...current, error: event.data.error ?? '整页组合运行失败' }
-          : current)
+      if (isSandboxRuntimeMessage(event, source, result.token, result.revisionId)) {
+        if ((event.data.type === 'ready' || event.data.type === 'resize') && event.data.height) {
+          setContentHeight(Math.min(4000, Math.max(420, Math.ceil(event.data.height))))
+          return
+        }
+        if (event.data.type === 'error') {
+          setResult((current) => current.key === renderKey
+            ? { ...current, error: event.data.error ?? '整页组合运行失败' }
+            : current)
+        }
       }
     }
     window.addEventListener('message', onMessage)
@@ -84,7 +91,8 @@ export default function GeneratedCompositionPreview({
       sandbox="allow-scripts"
       srcDoc={result.srcDoc}
       onLoad={syncActiveSlot}
-      className="block h-[min(68vh,680px)] min-h-[520px] w-full border-0 bg-transparent"
+      className="block w-full border-0 bg-transparent transition-[height] duration-500 ease-out"
+      style={{ height: contentHeight }}
     />
   )
 }
