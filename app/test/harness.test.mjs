@@ -124,6 +124,43 @@ test('kimi client preserves the browser fetch receiver', async () => {
   assert.deepEqual(result, { ok: true })
 })
 
+test('deepseek requests use native JSON mode and role-specific temperature', async () => {
+  let requestBody
+  const fetchImpl = async (_url, init) => {
+    requestBody = JSON.parse(init.body)
+    return new Response('data: {"choices":[{"delta":{"content":"{\\"ok\\":true}"}}]}\n\ndata: [DONE]\n\n')
+  }
+  const client = new BrowserKimiClient({
+    apiKey: 'test', baseUrl: 'https://example.test/v1',
+    model: 'deepseek-v4-flash', temperature: 0.7,
+  }, fetchImpl)
+  await client.completeJson([], {
+    signal: new AbortController().signal,
+    model: 'deepseek-v4-flash',
+    maxTokens: 6000,
+    temperature: 0.15,
+    jsonMode: true,
+  })
+  assert.deepEqual(requestBody.response_format, { type: 'json_object' })
+  assert.equal(requestBody.temperature, 0.15)
+  assert.equal(requestBody.max_tokens, 6000)
+})
+
+test('qwen requests retain configured temperature and omit deepseek-only JSON mode', async () => {
+  let requestBody
+  const fetchImpl = async (_url, init) => {
+    requestBody = JSON.parse(init.body)
+    return new Response('data: {"choices":[{"delta":{"content":"{\\"ok\\":true}"}}]}\n\ndata: [DONE]\n\n')
+  }
+  const client = new BrowserKimiClient({
+    apiKey: 'test', baseUrl: 'https://example.test/v1',
+    model: 'qwen3.6-flash', temperature: 0.7,
+  }, fetchImpl)
+  await client.completeJson([], { signal: new AbortController().signal, model: 'qwen3.6-flash' })
+  assert.equal(requestBody.temperature, 0.7)
+  assert.equal(requestBody.response_format, undefined)
+})
+
 test('local model proxy supports keyless browser requests and safe upstream rewriting', async () => {
   assert.equal(isLocalModelProxyBase('/api/model'), true)
   assert.equal(isLocalModelProxyBase('http://127.0.0.1:7100/api/model/'), true)
@@ -353,6 +390,15 @@ test('schemas reject unsafe files and unapproved dependencies', () => {
     })),
   }
   assert.equal(parsePlan(basePlan).components.length, 3)
+  const manyComponents = Array.from({ length: 12 }, (_, index) => ({
+    id: `section-${index}`, role: `Section ${index}`, slot: `section-${index}`,
+    width: 'fluid', inputs: [], outputs: [], dependencies: ['react'], designTokens: [],
+  }))
+  assert.equal(parsePlan({
+    ...basePlan,
+    pages: [{ ...basePlan.pages[0], slots: manyComponents.map(({ id }) => id) }],
+    components: manyComponents,
+  }).components.length, 12)
   assert.throws(() => parsePlan({
     ...basePlan,
     components: basePlan.components.map((item, index) => index ? item : { ...item, dependencies: ['evil-package'] }),

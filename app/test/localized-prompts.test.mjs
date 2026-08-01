@@ -63,6 +63,8 @@ test('planner and component prompts require localized visible copy but English i
   assert.equal(planner.uiLanguage, '简体中文（zh-CN）')
   assert.match(planner.rules.join('\n'), /project\.name.*简体中文/)
   assert.match(planner.rules.join('\n'), /input\/output name.*英文/)
+  assert.match(planner.rules.join('\n'), /不设置固定总数上限/)
+  assert.match(planner.rules.join('\n'), /header、sidebar、summary、chart/)
 
   const input = {
     requirement: '做一个收入数据看板',
@@ -90,4 +92,28 @@ test('revision prompt keeps generated UI in the original requirement language', 
   })[1].content)
   assert.equal(prompt.uiLanguage, '简体中文（zh-CN）')
   assert.match(prompt.rules.join('\n'), /input\/prop.*代码标识符/)
+})
+
+test('large plans keep builder context bounded without limiting slot count', () => {
+  const manyComponents = Array.from({ length: 12 }, (_, index) => ({
+    id: `section-${index}`,
+    role: `区块 ${index + 1}`,
+    slot: `section-${index}`,
+    width: 'fluid',
+    inputs: index === 0 ? [{ name: 'timeRange', type: 'string', required: true }] : [],
+    outputs: [], dependencies: ['react'], designTokens: [],
+  }))
+  const largePlan = {
+    ...plan,
+    pages: [{ id: 'home', name: '首页', route: '/', slots: manyComponents.map(({ id }) => id) }],
+    components: manyComponents,
+  }
+  const prompt = JSON.parse(builderMessages({
+    requirement: '做一个大型运营驾驶舱', plan: largePlan, direction,
+    component: manyComponents[0], variant: 'expressive',
+  })[1].content)
+  assert.equal(prompt.compositionContext.siblingResponsibilities.length, 6)
+  assert.equal(prompt.compositionContext.omittedSiblingCount, 5)
+  assert.match(prompt.rules.join('\n'), /另有 5 个槽位未展开/)
+  assert.doesNotMatch(prompt.rules.join('\n'), /section-7:区块 8/)
 })

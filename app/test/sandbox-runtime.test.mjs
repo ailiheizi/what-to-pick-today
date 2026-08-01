@@ -142,7 +142,24 @@ test('composition sandbox renders siblings in one React tree and wires semantic 
   assert.match(document, /measureHeight/)
   assert.match(document, /data-direction[^\n]+md3/)
   assert.match(document, /repeat\(auto-fit,minmax\(min\(100%,360px\),1fr\)\)/)
+  assert.match(document, /data-layout="dashboard"[^\n]+grid-template-columns/)
+  assert.match(document, /data-layout="dashboard"[^\n]+data-slot-kind="sidebar"[^\n]+position:sticky/)
   assert.match(document, /data\.type!==['"]active-slot['"]/)
   assert.match(document, /classList\.toggle\(['"]is-active['"]/)
   assert.match(document, /slot\.dataset\.compositionSlot/)
+})
+
+test('composition sandbox classifies semantic header and sidebar slots for page layout', async () => {
+  const topNav = candidate(`export default function TopNav(){return <nav>导航</nav>}`)
+  topNav.id = 'top-nav-candidate'
+  topNav.componentId = 'top-nav'
+  const sideNav = candidate(`export default function SideNav(){return <aside>菜单</aside>}`)
+  sideNav.id = 'side-nav-candidate'
+  sideNav.componentId = 'side-navigation'
+  const document = await createCompositionSandboxDocument([
+    { candidate: topNav, contract: { id: 'top-nav', role: '顶部导航栏', slot: 'top-navigation', width: 'fluid', inputs: [], outputs: [], dependencies: ['react'], designTokens: [] } },
+    { candidate: sideNav, contract: { id: 'side-navigation', role: '功能侧边栏', slot: 'navigation-panel', width: 'fixed', inputs: [], outputs: [], dependencies: ['react'], designTokens: [] } },
+  ], {}, 'semantic-token', 'semantic-revision', 'dashboard', 'md3')
+  assert.match(document, /'data-slot-kind':"header"/)
+  assert.match(document, /'data-slot-kind':"sidebar"/)
 })

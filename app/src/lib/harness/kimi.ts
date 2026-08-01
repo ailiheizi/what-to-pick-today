@@ -11,6 +11,8 @@ type CompletionOptions = {
   onDelta?: (delta: string) => void
   model?: string
   maxTokens?: number
+  temperature?: number
+  jsonMode?: boolean
 }
 
 export type StreamingJsonString = {
@@ -98,6 +100,8 @@ export class BrowserKimiClient {
   async completeJson(messages: ChatMessage[], options: CompletionOptions): Promise<unknown> {
     if (!this.#settings.apiKey.trim() && !isLocalModelProxyBase(this.#settings.baseUrl)) throw new Error('请先配置 AI API Key')
     const model = options.model ?? this.#settings.model
+    const temperature = options.temperature
+      ?? (['kimi-k2.5', 'kimi-k3'].includes(model) ? 1 : this.#settings.temperature)
     const headers: Record<string, string> = { 'content-type': 'application/json' }
     if (this.#settings.apiKey.trim()) headers.authorization = `Bearer ${this.#settings.apiKey}`
     const response = await this.#fetch(`${this.#settings.baseUrl.replace(/\/$/, '')}/chat/completions`, {
@@ -107,7 +111,8 @@ export class BrowserKimiClient {
         model,
         messages,
         stream: true,
-        temperature: ['kimi-k2.5', 'kimi-k3'].includes(model) ? 1 : this.#settings.temperature,
+        temperature,
+        ...(options.jsonMode ? { response_format: { type: 'json_object' } } : {}),
         ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
       }),
       signal: options.signal,

@@ -25,7 +25,7 @@ const planSchema = z.object({
     outputs: z.array(z.object({ name: z.string(), payload: z.string(), description: z.string().optional() })),
     dependencies: z.array(z.string()),
     designTokens: z.array(z.string()),
-  })).min(1).max(4),
+  })).min(1),
 })
 
 const candidateSchema = z.object({

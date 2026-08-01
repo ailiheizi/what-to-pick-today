@@ -235,6 +235,7 @@ export class HarnessSession {
         signal: this.#abortController.signal,
         model: route.model,
         maxTokens: route.maxTokens,
+        ...(/deepseek/i.test(route.model) ? { temperature: 0.15, jsonMode: true } : {}),
         onDelta: (delta) => {
           receivedChars += delta.length
           if (receivedChars < 240) return

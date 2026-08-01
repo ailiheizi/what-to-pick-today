@@ -9,6 +9,7 @@ import { DIRECTIONS, getDirection } from './dna'
 import * as sfx from './sound'
 import { HarnessSession, SandboxRuntimeAdapter, harnessStorage, hasKimiApiKey, loadKimiSettings } from './harness/index.ts'
 import { classifyError } from './harness/errors.ts'
+import { inferGeneratedLayout } from './harness/layout.ts'
 import {
   checkoutBranch as checkoutRevisionBranch,
   commit as commitRevision,
@@ -226,7 +227,7 @@ function scenarioFromPlan(plan: PagePlan): Scenario {
     title: plan.project.description || plan.project.name,
     projectName: plan.project.name,
     match: /(?:)/,
-    layout: 'freeform',
+    layout: inferGeneratedLayout(plan),
     plannerNotes: [],
     slots: plan.components.map((component) => ({
       id: component.id,

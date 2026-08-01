@@ -79,11 +79,22 @@ export function sharedPreviewProps(plan: PagePlan, requirement = '') {
 }
 
 function compositionContext(plan: PagePlan, component: ComponentContract, requirement: string) {
+  const signalKey = (name: string) => name.trim().replace(/^on(?=[A-Z_])/, '').toLowerCase().replace(/(?:changed?|selected|updated|submitted)$/, '')
+  const currentSignals = new Set([
+    ...component.inputs.map((input) => signalKey(input.name)),
+    ...component.outputs.map((output) => signalKey(output.name)),
+  ].filter(Boolean))
+  const siblings = plan.components.filter((item) => item.id !== component.id)
+  const related = siblings.filter((item) => [...item.inputs, ...item.outputs]
+    .some((signal) => currentSignals.has(signalKey(signal.name))))
+  const contextSiblings = [...related, ...siblings.filter((item) => !related.includes(item))].slice(0, 6)
+  const omittedRelatedCount = Math.max(0, related.length - contextSiblings.filter((item) => related.includes(item)).length)
   return {
     currentResponsibility: { id: component.id, role: component.role, inputs: component.inputs, outputs: component.outputs },
-    siblingResponsibilities: plan.components
-      .filter((item) => item.id !== component.id)
+    siblingResponsibilities: contextSiblings
       .map((item) => ({ id: item.id, role: item.role, inputs: item.inputs, outputs: item.outputs })),
+    omittedSiblingCount: Math.max(0, siblings.length - contextSiblings.length),
+    omittedRelatedCount,
     sharedPreviewProps: sharedPreviewProps(plan, requirement),
   }
 }
@@ -103,7 +114,8 @@ export function plannerMessages(requirement: string) {
         rules: [
           `project.name、project.description、pages[].name、components[].role 和所有 description 必须使用 ${uiLanguage}；不得因为字段 schema 是英文就输出英文可见文案`,
           'id、route、slot、input/output name 是代码标识符，保持简短的英文 kebab-case 或 camelCase；不要把它们当成用户可见文案',
-          '按复杂度拆成 1 到 4 个可以独立替换的组件槽位；简单页面不要过度拆分',
+          '按复杂度拆成可以独立替换的组件槽位，不设置固定总数上限：原子工具通常保持一个状态边界；信息丰富页面应把承担不同任务的区块分别拆出，不要为了减少数量而粗暴合并成一个大组件',
+          '信息丰富页面应覆盖完整页面骨架，例如 dashboard 可包含 header、sidebar、summary、chart、activity、table、insights 等；landing 可包含 nav、hero、social-proof、features、workflow、pricing、cta 等。每个槽位必须有独立职责和真实可见内容',
           '共享同一个核心交互状态的部分必须保持为一个槽位：计数显示+按钮、计算器显示+键盘、播放器画面+控制、表单字段+提交都禁止拆开',
           '只有能够独立替换且通过清晰 inputs/outputs 协作的页面区块才允许拆分；不得让兄弟组件各自复制同一份状态',
           '多槽位页面必须至少定义一条可追踪的跨槽位接口：上游 output 必须是 React 回调命名（onUserSelected、onRoleSelected、onMetricChange），下游 input 使用对应状态名（selectedUser、selectedRole、metric）；不要把 output 和 input 都命名成 selectedUser，也不要让所有 outputs 都为空',
@@ -139,6 +151,7 @@ export function builderMessages(input: {
   const uiLanguage = preferredUiLanguage(input.requirement)
   const entryFile = `src/generated/${input.component.id}/${input.variant}.tsx`
   const agent = builderAgentFor(input.variant)
+  const context = compositionContext(input.plan, input.component, input.requirement)
   const variantProfile = {
     conservative: {
       intent: '高完成度、低学习成本的经典方案',
@@ -172,7 +185,7 @@ export function builderMessages(input: {
         visualDNA: input.direction.visualDNA,
         componentContract: input.component,
         uiLanguage,
-        compositionContext: compositionContext(input.plan, input.component, input.requirement),
+        compositionContext: context,
         builderAgent: agent,
         variant: input.variant,
         variantProfile,
@@ -196,7 +209,7 @@ export function builderMessages(input: {
           '当前组件只展示 currentResponsibility.role 所描述的主体内容；兄弟组件的标题、主体指标、列表或控制区禁止出现在本组件中',
           '若当前职责包含“当前/概览/摘要”，不得附带未来、历史或明细列表；若职责包含“未来/预报/历史/列表”，不得再放一张当前状态摘要卡，只能把共享字段作为小型上下文标签',
           'sharedPreviewProps 中的共享字段必须原样用于 previewHtml 和 previewProps；共享字段只可作为上下文标签，不得借此复制兄弟组件的主体内容',
-          `同页兄弟组件为：${input.plan.components.filter((item) => item.id !== input.component.id).map((item) => `${item.id}:${item.role}`).join('；') || '无'}；当前组件不得重复它们的职责`,
+          `同页相关兄弟组件为：${context.siblingResponsibilities.map((item) => `${item.id}:${item.role}`).join('；') || '无'}${context.omittedSiblingCount ? `；另有 ${context.omittedSiblingCount} 个槽位未展开${context.omittedRelatedCount ? `（其中 ${context.omittedRelatedCount} 个存在直接接口）` : ''}` : ''}；当前组件不得重复它们的职责`,
           '不得省略代码，不得返回伪代码',
         ],
         outputSchema: {
@@ -301,12 +314,27 @@ export function reviewerMessages(input: {
   }>
   screenshot?: string
 }) {
+  const perCandidateSourceBudget = Math.max(2_000, Math.floor(72_000 / Math.max(1, input.selectedCandidates.length)))
+  const selectedCandidates = input.selectedCandidates.map((candidate) => {
+    let remaining = perCandidateSourceBudget
+    return {
+      ...candidate,
+      files: candidate.files.map((file) => {
+        const content = file.content.slice(0, Math.max(0, remaining))
+        remaining -= content.length
+        return {
+          ...file,
+          content: content.length < file.content.length ? `${content}\n/* Reviewer source truncated for context safety. */` : content,
+        }
+      }),
+    }
+  })
   const request = JSON.stringify({
     requirement: input.requirement,
     plan: input.plan,
     visualDNA: input.direction.visualDNA,
     selections: input.selections,
-    selectedCandidates: input.selectedCandidates,
+    selectedCandidates,
     rules: [
       '检查重复标题、间距节奏、视觉层级、组件内容关联、共享状态、响应式和用户可见文案的一致性',
       '检查每个槽位是否错误生成了独立页面底板、100vh/min-h-screen、重复导航或页面外壳；发现后要求改成透明、内容高度的可嵌入 section',

@@ -5,6 +5,7 @@ import type { Scenario, SlotDef } from '../../candidates/types'
 import { DIRECTIONS, getDirection } from '../../lib/dna'
 import { EXAMPLE_PROMPTS } from '../../lib/scenarios'
 import { inferSemanticBindings, signalName } from '../../lib/harness/bindings'
+import { DASHBOARD_SLOT_PATTERNS, LANDING_SLOT_PATTERNS, pickDistinctSemanticSlots } from '../../lib/harness/layout'
 import { ConfettiBurst, ConfettiRain, FloatingEmojis } from './playful'
 import GeneratedCandidatePreview from './GeneratedCandidatePreview'
 import GeneratedCompositionPreview from './GeneratedCompositionPreview'
@@ -64,7 +65,7 @@ function Welcome({ onPick }: { onPick: (p: string) => void }) {
       )}
       <div className="mt-10 md:mt-12 grid grid-cols-3 gap-4 md:gap-8 text-[10px] text-neutral-500">
         {[
-          ['3–6', '并发组件任务', 'anim-float'],
+          ['按需', '组件任务', 'anim-float'],
           ['×3', '每槽位候选', 'anim-float'],
           ['1 键', '挑选扣合', 'anim-float'],
         ].map(([n, l, a], i) => (
@@ -780,7 +781,22 @@ export default function CanvasStage() {
     return () => window.clearTimeout(timer)
   }, [activeSlotId, phase])
 
-  const slotById = (id: string) => slots.find((s) => s.def.id === id)
+  const [dashboardHeader, dashboardSidebar, dashboardStats, dashboardChart, dashboardTable] = pickDistinctSemanticSlots(
+    slots,
+    DASHBOARD_SLOT_PATTERNS,
+    (slot) => `${slot.def.id} ${slot.def.role}`,
+  )
+  const dashboardCoreIds = new Set([dashboardHeader, dashboardSidebar, dashboardStats, dashboardChart, dashboardTable]
+    .filter(Boolean).map((slot) => slot!.def.id))
+  const [landingNav, landingHero, landingFeatures, landingCta] = pickDistinctSemanticSlots(
+    slots,
+    LANDING_SLOT_PATTERNS,
+    (slot) => `${slot.def.id} ${slot.def.role}`,
+  )
+  const landingCoreIds = new Set([landingNav, landingHero, landingFeatures, landingCta]
+    .filter(Boolean).map((slot) => slot!.def.id))
+  const dashboardExtras = slots.filter((slot) => !dashboardCoreIds.has(slot.def.id))
+  const landingExtras = slots.filter((slot) => !landingCoreIds.has(slot.def.id))
   const gapCls = tweaks.density ? 'gap-4' : 'gap-5'
   const candidateTotal = slots.reduce((total, slot) => total + slot.candidates.length, 0)
   const compositionEntries = useMemo(() => slots.flatMap((slot) => {
@@ -826,22 +842,23 @@ export default function CanvasStage() {
                 />
               ) : scenario.layout === 'dashboard' ? (
                 <div className="flex flex-col">
-                  {slotById('header') && <SlotShell slot={slotById('header')!} />}
+                  {dashboardHeader && <SlotShell slot={dashboardHeader} />}
                   <div className="flex">
-                    {slotById('sidebar') && <SlotShell slot={slotById('sidebar')!} />}
+                    {dashboardSidebar && <SlotShell slot={dashboardSidebar} />}
                     <div className={`flex-1 min-w-0 p-4 flex flex-col ${gapCls}`} style={{ transition: 'gap 0.5s' }}>
-                      {slotById('stats') && <SlotShell slot={slotById('stats')!} />}
-                      {slotById('chart') && <SlotShell slot={slotById('chart')!} />}
-                      {slotById('table') && <SlotShell slot={slotById('table')!} />}
+                      {dashboardStats && <SlotShell slot={dashboardStats} />}
+                      {dashboardChart && <SlotShell slot={dashboardChart} />}
+                      {dashboardTable && <SlotShell slot={dashboardTable} />}
+                      {dashboardExtras.map((slot) => <SlotShell key={slot.def.id} slot={slot} />)}
                     </div>
                   </div>
                 </div>
               ) : scenario.layout === 'landing' ? (
                 <div className={`flex flex-col ${gapCls}`}>
-                  {['nav', 'hero', 'features', 'cta'].map((id) => {
-                    const sl = slotById(id)
-                    return sl ? <SlotShell key={id} slot={sl} /> : null
-                  })}
+                  {[landingNav, landingHero, landingFeatures, landingCta]
+                    .filter(Boolean)
+                    .map((slot) => <SlotShell key={slot!.def.id} slot={slot!} />)}
+                  {landingExtras.map((slot) => <SlotShell key={slot.def.id} slot={slot} />)}
                 </div>
               ) : (
                 <div className={`flex flex-col p-4 ${gapCls}`}>

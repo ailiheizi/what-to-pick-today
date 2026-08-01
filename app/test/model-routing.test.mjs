@@ -24,7 +24,7 @@ const legacySettings = { model: 'reasoning-model', codeModel: 'code-model', temp
  * falls back to `settings.model` (kimi.ts L100).
  */
 const TODAY = {
-  planner: { field: 'model', maxTokens: 3000 }, // session.ts L124-L126
+  planner: { field: 'model', maxTokens: 6000 },
   draft: { field: 'model', maxTokens: 900 }, // session.ts L315-L316
   builder: { field: 'codeModel', maxTokens: 6000 }, // session.ts L330-L331
   fixer: { field: 'codeModel', maxTokens: 6000 }, // session.ts L429-L430
@@ -61,7 +61,7 @@ test('backward compatible: two legacy fields reproduce today per-role model and 
   const routing = resolveModelRouting(legacySettings)
 
   // Asserted per role against what session.ts actually sends today.
-  assert.deepEqual(routing.planner, { model: 'reasoning-model', maxTokens: 3000 })
+  assert.deepEqual(routing.planner, { model: 'reasoning-model', maxTokens: 6000 })
   assert.deepEqual(routing.draft, { model: 'reasoning-model', maxTokens: 900 })
   assert.deepEqual(routing.builder, { model: 'code-model', maxTokens: 6000 })
   assert.deepEqual(routing.fixer, { model: 'code-model', maxTokens: 6000 })
@@ -121,7 +121,7 @@ test('explicit per-role overrides win over the legacy fields', () => {
   // A budget-only override keeps today's model.
   assert.deepEqual(routing.reviewer, { model: 'reasoning-model', maxTokens: 4000 })
   // Untouched roles are unchanged.
-  assert.deepEqual(routing.planner, { model: 'reasoning-model', maxTokens: 3000 })
+  assert.deepEqual(routing.planner, { model: 'reasoning-model', maxTokens: 6000 })
   assert.deepEqual(routing.fixer, { model: 'code-model', maxTokens: 6000 })
 })
 
@@ -184,7 +184,7 @@ test('validation catches a missing role', () => {
 
 test('validation reports every broken role, not just the first', () => {
   const result = shape(validateModelRouting({
-    planner: { model: '', maxTokens: 3000 },
+    planner: { model: '', maxTokens: 6000 },
     draft: { model: 'draft-model', maxTokens: 0 },
     // A null route is an absent role, not a malformed one.
     builder: null,
@@ -226,7 +226,7 @@ test('capabilities gate streaming, context budget and reviewer images', () => {
   const result = shape(validateModelRouting(resolveModelRouting(legacySettings), { capabilities }))
 
   assert.equal(result.valid, false)
-  // planner (3000) and reviewer (2500) exceed the 2000-token window; draft (900) does not.
+  // planner (6000) and reviewer (2500) exceed the 2000-token window; draft (900) does not.
   const overflow = result.issues.filter((issue) => issue.code === 'exceeds_context')
   assert.deepEqual(overflow.map((issue) => issue.role), ['planner', 'reviewer'])
   const noStream = result.issues.filter((issue) => issue.code === 'streaming_unsupported')

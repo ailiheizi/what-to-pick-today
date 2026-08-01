@@ -52,7 +52,7 @@ export default function GeneratedCompositionPreview({
       }
       if (isSandboxRuntimeMessage(event, source, result.token, result.revisionId)) {
         if ((event.data.type === 'ready' || event.data.type === 'resize') && event.data.height) {
-          setContentHeight(Math.min(4000, Math.max(420, Math.ceil(event.data.height))))
+          setContentHeight(Math.max(420, Math.ceil(event.data.height)))
           return
         }
         if (event.data.type === 'error') {

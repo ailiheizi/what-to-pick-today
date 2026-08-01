@@ -18,6 +18,13 @@ export type CompositionSandboxEntry = {
   active?: boolean
 }
 
+function compositionSlotKind(contract: ComponentContract) {
+  const semantic = `${contract.id} ${contract.slot} ${contract.role}`
+  if (/sidebar|side-nav|侧边|侧栏/i.test(semantic)) return 'sidebar'
+  if (/header|top-nav|navbar|顶部导航|顶栏/i.test(semantic)) return 'header'
+  return contract.slot
+}
+
 type SandboxSelectionMessage = SandboxSelectionBridge & {
   source: 'wtpt-sandbox'
   token: string
@@ -260,12 +267,13 @@ export async function createCompositionSandboxDocument(
     const props = escapeScript(JSON.stringify(candidate.previewProps).replace(/</g, '\\u003c'))
     const overrides = propOverrides.get(contract.id) ?? []
     const mergedProps = overrides.length ? `{...${props},${overrides.join(',')}}` : props
+    const slotKind = compositionSlotKind(contract)
     return `React.createElement('section',{
       key:${JSON.stringify(contract.id)},
       className:'composition-slot${active ? ' is-active' : ''}',
       'data-composition-slot':${JSON.stringify(contract.id)},
       'data-candidate-id':${JSON.stringify(candidate.id)},
-      'data-slot-kind':${JSON.stringify(contract.slot)},
+      'data-slot-kind':${JSON.stringify(slotKind)},
       'data-slot-label':${JSON.stringify(contract.role)}
     },React.createElement(Component${index},${mergedProps}))`
   }).join(',\n')
@@ -299,13 +307,16 @@ export async function createCompositionSandboxDocument(
     .composition-slot.is-active{outline:2px solid color-mix(in srgb,var(--dna-accent,#7c3aed) 65%,transparent);outline-offset:-2px}
     .composition-slot::before{content:attr(data-slot-label);position:absolute;z-index:999;top:8px;left:12px;max-width:calc(100% - 24px);padding:4px 9px;border-radius:999px;background:color-mix(in srgb,var(--dna-surface,#fff) 86%,transparent);color:var(--dna-text,#171717);box-shadow:0 4px 16px rgba(0,0,0,.12);font:700 10px/1.2 system-ui,sans-serif;opacity:0;transform:translateY(-4px);pointer-events:none;transition:opacity .18s ease,transform .18s ease}
     .composition-slot:hover::before,.composition-slot.is-active::before{opacity:1;transform:translateY(0)}
-    .composition-root[data-layout="dashboard"]{display:grid;grid-template-columns:minmax(180px,26%) minmax(0,1fr);align-items:start}.composition-root[data-layout="dashboard"]>[data-slot-kind="header"]{grid-column:1/-1}.composition-root[data-layout="dashboard"]>[data-slot-kind="sidebar"]{grid-column:1}.composition-root[data-layout="dashboard"]>:not([data-slot-kind="header"]):not([data-slot-kind="sidebar"]){grid-column:2}
     .composition-root[data-direction="apple"]{gap:14px;padding:18px}.composition-root[data-direction="apple"]>.composition-slot{border-radius:calc(var(--dna-radius,22px) + 4px);overflow:hidden}
-    .composition-root[data-direction="md3"]{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr));gap:18px;padding:20px;align-items:start}.composition-root[data-direction="md3"]>.composition-slot{min-height:100%;border-radius:var(--dna-radius,28px);background:var(--dna-surface,#fff)}
+    .composition-root[data-direction="md3"]{gap:18px;padding:20px;align-items:start}.composition-root[data-direction="md3"]>.composition-slot{min-height:100%;border-radius:var(--dna-radius,28px);background:var(--dna-surface,#fff)}
     .composition-root[data-direction="md3"]>.composition-slot:first-child:nth-last-child(3){grid-column:1/-1}
     .composition-root[data-direction="hacker"]{gap:0;padding:12px}.composition-root[data-direction="hacker"]>.composition-slot{border:1px solid var(--dna-line,#1e281e);border-bottom:0}.composition-root[data-direction="hacker"]>.composition-slot:last-child{border-bottom:1px solid var(--dna-line,#1e281e)}
-    .composition-root[data-direction="retro"]{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(240px,.85fr);gap:22px;padding:24px}.composition-root[data-direction="retro"]>.composition-slot{border-top:3px double var(--dna-line,#8a7b63);padding-top:10px}
-    @media(max-width:640px){.composition-root[data-layout="dashboard"],.composition-root[data-direction="md3"],.composition-root[data-direction="retro"]{display:flex}.composition-root[data-direction]{padding:12px}.composition-slot::before{opacity:1;transform:none}}
+    .composition-root[data-direction="retro"]{gap:22px;padding:24px}.composition-root[data-direction="retro"]>.composition-slot{border-top:3px double var(--dna-line,#8a7b63);padding-top:10px}
+    .composition-root[data-layout="dashboard"]{display:grid;grid-template-columns:minmax(180px,26%) minmax(0,1fr);align-items:start}.composition-root[data-layout="dashboard"]>[data-slot-kind="header"]{grid-column:1/-1}.composition-root[data-layout="dashboard"]>[data-slot-kind="sidebar"]{grid-column:1;align-self:start;position:sticky;top:20px}.composition-root[data-layout="dashboard"]>:not([data-slot-kind="header"]):not([data-slot-kind="sidebar"]){grid-column:2}
+    .composition-root[data-layout="landing"]{display:flex;flex-direction:column}
+    .composition-root:not([data-layout="dashboard"]):not([data-layout="landing"])[data-direction="md3"]{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr))}
+    .composition-root:not([data-layout="dashboard"]):not([data-layout="landing"])[data-direction="retro"]{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(240px,.85fr)}
+    @media(max-width:640px){.composition-root[data-layout="dashboard"],.composition-root[data-layout="landing"],.composition-root[data-direction="md3"],.composition-root[data-direction="retro"]{display:flex;flex-direction:column}.composition-root[data-layout="dashboard"]>[data-slot-kind="sidebar"]{position:relative;top:auto}.composition-root[data-direction]{padding:12px}.composition-slot::before{opacity:1;transform:none}}
     @media (prefers-reduced-motion: reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
     ${css}
   </style>

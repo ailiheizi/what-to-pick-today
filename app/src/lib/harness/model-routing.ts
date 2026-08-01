@@ -11,7 +11,7 @@
  *
  * | role     | model field | maxTokens | session.ts                    |
  * | -------- | ----------- | --------- | ----------------------------- |
- * | planner  | `model`     | 3000      | L124-L126 (no `model` option) |
+ * | planner  | `model`     | 6000      | Large plans may contain many independent slots |
  * | draft    | `model`     | 900       | L315-L316                     |
  * | builder  | `codeModel` | 6000      | L330-L331                     |
  * | fixer    | `codeModel` | 6000      | L429-L430                     |
@@ -88,7 +88,7 @@ export const ROLE_LABELS: Record<ModelRole, string> = {
  * against `session.ts` (see the table in the module doc comment).
  */
 export const LEGACY_ROLE_ROUTING: Record<ModelRole, { field: LegacyModelField; maxTokens: number }> = {
-  planner: { field: 'model', maxTokens: 3000 },
+  planner: { field: 'model', maxTokens: 6000 },
   draft: { field: 'model', maxTokens: 900 },
   builder: { field: 'codeModel', maxTokens: 6000 },
   fixer: { field: 'codeModel', maxTokens: 6000 },
