@@ -856,20 +856,26 @@ export default function CanvasStage() {
             </div>
             <div
               ref={frameRef}
-              className="anim-frame-in relative mx-auto max-w-4xl rounded-[28px] overflow-hidden shadow-2xl transition-colors duration-500 border border-white/50"
+              data-canvas-overview-frame
+              className="relative mx-auto max-w-4xl"
               style={{
-                ...(vars as React.CSSProperties),
-                background: 'var(--dna-bg)',
-                fontFamily: 'var(--dna-font)',
-                ...(glass ? { backdropFilter: 'blur(28px) saturate(180%)', WebkitBackdropFilter: 'blur(28px) saturate(180%)' } : {}),
                 ...(canvasView === 'overview' ? {
                   transform: `scale(${overview.scale})`,
                   transformOrigin: 'top center',
                   marginBottom: `${-overview.contentHeight * (1 - overview.scale)}px`,
-                  transition: 'transform 360ms ease, margin-bottom 360ms ease, background-color 500ms ease',
+                  transition: 'transform 360ms ease, margin-bottom 360ms ease',
                 } : {}),
               }}
             >
+              <div
+                className="anim-frame-in relative rounded-[28px] overflow-hidden shadow-2xl transition-colors duration-500 border border-white/50"
+                style={{
+                  ...(vars as React.CSSProperties),
+                  background: 'var(--dna-bg)',
+                  fontFamily: 'var(--dna-font)',
+                  ...(glass ? { backdropFilter: 'blur(28px) saturate(180%)', WebkitBackdropFilter: 'blur(28px) saturate(180%)' } : {}),
+                }}
+              >
               {/* 风格氛围层：黑客=CRT 扫描线组，复古=纸张颗粒 */}
               <StyleAtmosphere dirId={dir.id} />
               {showIntegratedComposition ? (
@@ -913,6 +919,7 @@ export default function CanvasStage() {
                   ))}
                 </div>
               )}
+              </div>
             </div>
             <div className="mx-auto max-w-4xl mt-3 flex items-center justify-between text-[10px] text-neutral-500">
               <span>沙箱预览 · iframe 隔离 + CSP + 依赖白名单（{harnessMode === 'kimi' ? '真实生成' : '演示模式'}）</span>

@@ -50,9 +50,10 @@ test('component structure can infer landing and dashboard layouts', () => {
   ])), 'dashboard')
 })
 
-test('overview scale fits long pages while keeping a usable lower bound', () => {
-  assert.equal(overviewScale(720, 600), 1)
-  assert.equal(overviewScale(720, 1200), 0.5)
-  assert.equal(overviewScale(500, 5000), 0.18)
+test('overview scale always fits the complete page, including very long plans', () => {
+  assert.equal(overviewScale(720, 500), 1)
+  assert.equal(overviewScale(720, 1200), 0.485)
+  assert.equal(overviewScale(500, 5000), 0.07372)
+  assert.equal(overviewScale(500, 100000), 0.02)
   assert.equal(overviewScale(Number.NaN, 1200), 1)
 })

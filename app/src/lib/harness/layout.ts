@@ -56,5 +56,7 @@ export function inferGeneratedLayout(plan: PagePlan): Scenario['layout'] {
 export function overviewScale(viewportHeight: number, contentHeight: number, reservedHeight = 120) {
   if (!Number.isFinite(viewportHeight) || !Number.isFinite(contentHeight) || contentHeight <= 0) return 1
   const availableHeight = Math.max(120, viewportHeight - reservedHeight)
-  return Math.max(0.18, Math.min(1, availableHeight / contentHeight))
+  // Overview means the whole page must fit. Do not impose a readability floor:
+  // very long, multi-slot pages may legitimately need a scale below 18%.
+  return Math.max(0.02, Math.min(1, (availableHeight / contentHeight) * 0.97))
 }
