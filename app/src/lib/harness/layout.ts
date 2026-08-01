@@ -53,10 +53,18 @@ export function inferGeneratedLayout(plan: PagePlan): Scenario['layout'] {
   return 'freeform'
 }
 
-export function overviewScale(viewportHeight: number, contentHeight: number, reservedHeight = 120) {
-  if (!Number.isFinite(viewportHeight) || !Number.isFinite(contentHeight) || contentHeight <= 0) return 1
+export function overviewContainScale(
+  viewportWidth: number,
+  viewportHeight: number,
+  logicalWidth: number,
+  contentHeight: number,
+  reservedHeight = 120,
+) {
+  if (![viewportWidth, viewportHeight, logicalWidth, contentHeight].every(Number.isFinite) || logicalWidth <= 0 || contentHeight <= 0) return 1
+  const availableWidth = Math.max(160, viewportWidth - 16)
   const availableHeight = Math.max(120, viewportHeight - reservedHeight)
-  // Overview means the whole page must fit. Do not impose a readability floor:
-  // very long, multi-slot pages may legitimately need a scale below 18%.
-  return Math.max(0.02, Math.min(1, (availableHeight / contentHeight) * 0.97))
+  // Render at a desktop-like logical width first, then contain that canvas by
+  // both dimensions. This avoids turning a narrow responsive page into a long,
+  // unreadable strip before scaling it down.
+  return Math.max(0.02, Math.min(1, availableWidth / logicalWidth, availableHeight / contentHeight) * 0.97)
 }

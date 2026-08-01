@@ -5,7 +5,7 @@ import type { Scenario, SlotDef } from '../../candidates/types'
 import { DIRECTIONS, getDirection } from '../../lib/dna'
 import { EXAMPLE_PROMPTS } from '../../lib/scenarios'
 import { inferSemanticBindings, signalName } from '../../lib/harness/bindings'
-import { DASHBOARD_SLOT_PATTERNS, LANDING_SLOT_PATTERNS, overviewScale, pickDistinctSemanticSlots } from '../../lib/harness/layout'
+import { DASHBOARD_SLOT_PATTERNS, LANDING_SLOT_PATTERNS, overviewContainScale, pickDistinctSemanticSlots } from '../../lib/harness/layout'
 import { ConfettiBurst, ConfettiRain, FloatingEmojis } from './playful'
 import GeneratedCandidatePreview from './GeneratedCandidatePreview'
 import GeneratedCompositionPreview from './GeneratedCompositionPreview'
@@ -759,7 +759,7 @@ export default function CanvasStage() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const frameRef = useRef<HTMLDivElement>(null)
   const [canvasView, setCanvasView] = useState<'width' | 'overview'>('width')
-  const [overview, setOverview] = useState({ scale: 1, contentHeight: 0 })
+  const [overview, setOverview] = useState({ scale: 1, contentHeight: 0, logicalWidth: 1200 })
 
   const vars = useMemo(() => {
     const v = { ...dir.vars } as Record<string, string>
@@ -790,8 +790,13 @@ export default function CanvasStage() {
     const viewport = scrollRef.current
     if (!frame || !viewport) return
     const update = () => {
+      const logicalWidth = Math.max(viewport.clientWidth, Math.min(1200, viewport.clientWidth * 2.5))
       const contentHeight = Math.max(frame.scrollHeight, frame.getBoundingClientRect().height)
-      setOverview({ scale: overviewScale(viewport.clientHeight, contentHeight), contentHeight })
+      setOverview({
+        scale: overviewContainScale(viewport.clientWidth, viewport.clientHeight, logicalWidth, contentHeight),
+        contentHeight,
+        logicalWidth,
+      })
     }
     update()
     const observer = new ResizeObserver(update)
@@ -827,7 +832,9 @@ export default function CanvasStage() {
   const showIntegratedComposition = harnessMode === 'kimi' && slots.length > 1 && compositionEntries.length === slots.length
 
   return (
-    <main className="flex-1 min-h-0 min-w-0 w-full relative">
+    <main className={canvasView === 'overview'
+      ? 'fixed inset-0 z-40 min-h-0 min-w-0 overflow-hidden bg-[#f8f3fb]'
+      : 'flex-1 min-h-0 min-w-0 w-full relative'}>
       <div ref={scrollRef} className="absolute inset-0 overflow-y-auto rounded-3xl">
         {phase === 'idle' && <Welcome onPick={submitPrompt} />}
         {(phase === 'planning' || (phase === 'direction' && !scenario)) && <PlanView />}
@@ -855,27 +862,34 @@ export default function CanvasStage() {
               </div>
             </div>
             <div
-              ref={frameRef}
-              data-canvas-overview-frame
-              className="relative mx-auto max-w-4xl"
+              data-canvas-overview-shell
+              className="relative mx-auto w-full max-w-4xl"
               style={{
-                ...(canvasView === 'overview' ? {
-                  transform: `scale(${overview.scale})`,
-                  transformOrigin: 'top center',
-                  marginBottom: `${-overview.contentHeight * (1 - overview.scale)}px`,
-                  transition: 'transform 360ms ease, margin-bottom 360ms ease',
-                } : {}),
+                height: canvasView === 'overview' ? Math.max(120, overview.contentHeight * overview.scale) : undefined,
+                transition: 'height 360ms ease',
               }}
             >
               <div
-                className="anim-frame-in relative rounded-[28px] overflow-hidden shadow-2xl transition-colors duration-500 border border-white/50"
+                ref={frameRef}
+                data-canvas-overview-frame
+                className={`relative ${canvasView === 'overview' ? 'absolute left-0 top-0 max-w-none' : ''}`}
                 style={{
-                  ...(vars as React.CSSProperties),
-                  background: 'var(--dna-bg)',
-                  fontFamily: 'var(--dna-font)',
-                  ...(glass ? { backdropFilter: 'blur(28px) saturate(180%)', WebkitBackdropFilter: 'blur(28px) saturate(180%)' } : {}),
+                  width: canvasView === 'overview' ? overview.logicalWidth : '100%',
+                  left: canvasView === 'overview' ? '50%' : undefined,
+                  transform: canvasView === 'overview' ? `translateX(-50%) scale(${overview.scale})` : undefined,
+                  transformOrigin: 'top center',
+                  transition: 'transform 360ms ease, width 360ms ease',
                 }}
               >
+                <div
+                  className="anim-frame-in relative rounded-[28px] overflow-hidden shadow-2xl transition-colors duration-500 border border-white/50"
+                  style={{
+                    ...(vars as React.CSSProperties),
+                    background: 'var(--dna-bg)',
+                    fontFamily: 'var(--dna-font)',
+                    ...(glass ? { backdropFilter: 'blur(28px) saturate(180%)', WebkitBackdropFilter: 'blur(28px) saturate(180%)' } : {}),
+                  }}
+                >
               {/* 风格氛围层：黑客=CRT 扫描线组，复古=纸张颗粒 */}
               <StyleAtmosphere dirId={dir.id} />
               {showIntegratedComposition ? (
@@ -919,6 +933,7 @@ export default function CanvasStage() {
                   ))}
                 </div>
               )}
+                </div>
               </div>
             </div>
             <div className="mx-auto max-w-4xl mt-3 flex items-center justify-between text-[10px] text-neutral-500">
